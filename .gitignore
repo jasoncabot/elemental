@@ -1,0 +1,37 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode build intermediates
+build/
+*.o
+*.d
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/.build/
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+
+# Credentials / signing
+*.p12
+*.mobileprovision
+ExportOptions.plist
