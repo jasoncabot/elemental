@@ -1,80 +1,101 @@
 import AppKit
-import GitData
-import Presenters
 
-/// The main window: a three-pane split (sidebar / commit list / detail). Phase A wires the shell
-/// and proves the data layer links and runs; the rich views land in the view-layer feature.
-final class MainWindowController: NSWindowController {
-    private let backend: GitBackend?
-    private let statusLabel = NSTextField(labelWithString: "Elemental")
+/// Owns the main window: a three-pane NSSplitView (sidebar / commit list / detail).
+/// The coordinator builds and injects the child view controllers; this class is
+/// responsible only for layout and window bookkeeping.
+final class MainWindowController: NSWindowController, NSSplitViewDelegate {
 
-    init() {
-        self.backend = try? CLIGitBackend()
+    private let splitView = NSSplitView()
+
+    private let sidebarVC: NSViewController
+    private let commitListVC: NSViewController
+    private let detailVC: NSViewController
+
+    // MARK: - Init
+
+    init(sidebarVC: NSViewController,
+         commitListVC: NSViewController,
+         detailVC: NSViewController) {
+        self.sidebarVC = sidebarVC
+        self.commitListVC = commitListVC
+        self.detailVC = detailVC
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false
+            backing: .buffered,
+            defer: false
         )
         window.title = "Elemental"
         window.center()
         window.setFrameAutosaveName("MainWindow")
+
         super.init(window: window)
         buildLayout()
-        loadGitVersion()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("Storyboards are not used") }
 
+    // MARK: - Layout
+
     private func buildLayout() {
-        let split = NSSplitView()
-        split.isVertical = true
-        split.dividerStyle = .thin
-        split.translatesAutoresizingMaskIntoConstraints = false
+        splitView.isVertical = true
+        splitView.dividerStyle = .thin
+        splitView.delegate = self
+        splitView.autoresizingMask = [.width, .height]
 
-        split.addArrangedSubview(makePane("Repositories", background: .controlBackgroundColor))
-        split.addArrangedSubview(makePane("Commits", background: .textBackgroundColor))
+        // Add child views to split
+        splitView.addArrangedSubview(sidebarVC.view)
+        splitView.addArrangedSubview(commitListVC.view)
+        splitView.addArrangedSubview(detailVC.view)
 
-        let detail = makePane("Detail", background: .textBackgroundColor)
-        detail.addSubview(statusLabel)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: detail.leadingAnchor, constant: 16),
-            statusLabel.topAnchor.constraint(equalTo: detail.topAnchor, constant: 16),
-        ])
-        split.addArrangedSubview(detail)
+        window?.contentView = splitView
 
-        window?.contentView = split
+        // Hold child VCs so they aren't deallocated
+        contentViewController = NSViewController()
+        contentViewController?.addChild(sidebarVC)
+        contentViewController?.addChild(commitListVC)
+        contentViewController?.addChild(detailVC)
     }
 
-    private func makePane(_ title: String, background: NSColor) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = background.cgColor
-        let header = NSTextField(labelWithString: title)
-        header.font = .systemFont(ofSize: 11, weight: .semibold)
-        header.textColor = .secondaryLabelColor
-        header.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(header)
-        NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            header.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
-        ])
-        return view
+    // MARK: - NSSplitViewDelegate
+
+    func splitView(_ splitView: NSSplitView,
+                   constrainMinCoordinate proposedMinimumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        switch dividerIndex {
+        case 0: return 160    // sidebar minimum
+        case 1: return 400    // sidebar + commit list combined minimum
+        default: return proposedMinimumPosition
+        }
     }
 
-    private func loadGitVersion() {
-        guard let backend else {
-            statusLabel.stringValue = "git not found on PATH"
-            return
+    func splitView(_ splitView: NSSplitView,
+                   constrainMaxCoordinate proposedMaximumPosition: CGFloat,
+                   ofSubviewAt dividerIndex: Int) -> CGFloat {
+        switch dividerIndex {
+        case 0: return 320    // sidebar maximum
+        default: return proposedMaximumPosition
         }
-        Task { @MainActor in
-            if let version = try? await backend.gitVersion() {
-                statusLabel.stringValue = "Connected to \(version)"
-            } else {
-                statusLabel.stringValue = "git not available"
-            }
-        }
+    }
+
+    func splitView(_ splitView: NSSplitView,
+                   resizeSubviewsWithOldSize oldSize: NSSize) {
+        let total = splitView.bounds.width
+        let dividerThickness = splitView.dividerThickness * 2
+
+        let sidebarWidth = splitView.subviews[0].frame.width
+        let remaining = total - sidebarWidth - dividerThickness
+        let commitWidth = max(200, remaining * 0.4)
+        let detailWidth = max(200, remaining - commitWidth)
+
+        splitView.subviews[0].frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: splitView.bounds.height)
+        splitView.subviews[1].frame = NSRect(x: sidebarWidth + splitView.dividerThickness,
+                                              y: 0, width: commitWidth,
+                                              height: splitView.bounds.height)
+        splitView.subviews[2].frame = NSRect(x: sidebarWidth + splitView.dividerThickness + commitWidth + splitView.dividerThickness,
+                                              y: 0, width: detailWidth,
+                                              height: splitView.bounds.height)
     }
 }
