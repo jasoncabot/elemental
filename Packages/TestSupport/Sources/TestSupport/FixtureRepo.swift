@@ -46,6 +46,14 @@ public final class FixtureRepo {
         try Data(bytes).write(to: fileURL)
     }
 
+    /// Write raw bytes (Data) to a file — used for CRLF, mixed endings, binary, etc.
+    public func writeData(_ path: String, _ data: Data) throws {
+        let fileURL = url.appendingPathComponent(path)
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: fileURL)
+    }
+
     @discardableResult
     public func commit(_ message: String, addAll: Bool = true) throws -> String {
         if addAll { try run(["add", "-A"]) }
@@ -65,12 +73,56 @@ public final class FixtureRepo {
         try run(["merge", "--no-ff", "-q", "-m", message, branch])
     }
 
+    /// Perform an octopus merge of multiple branches in a single commit.
+    public func octopusMerge(_ branches: [String], message: String) throws {
+        try run(["merge", "--no-ff", "-q", "-m", message] + branches)
+    }
+
     public func tag(_ name: String) throws {
         try run(["tag", name])
     }
 
     public func revParse(_ ref: String) throws -> String {
         try output(["rev-parse", ref]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Catalog factory methods
+
+    /// Build an empty repo (no commits at all) and return its URL.
+    public static func makeEmpty() throws -> FixtureRepo {
+        // Default init already produces an empty repo; no commits added.
+        return try FixtureRepo()
+    }
+
+    /// Build a bare clone of self into a sibling directory; caller is responsible for cleanup.
+    public func makeBareClone() throws -> URL {
+        let bareURL = url.deletingLastPathComponent()
+            .appendingPathComponent("bare-\(UUID().uuidString).git")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: git)
+        p.arguments = ["clone", "--bare", "-q", url.path, bareURL.path]
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        p.environment = env
+        p.standardError = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return bareURL
+    }
+
+    /// Add a linked worktree checked out to `branch`. Returns the worktree URL.
+    public func addWorktree(branch: String) throws -> URL {
+        let wtURL = url.deletingLastPathComponent()
+            .appendingPathComponent("wt-\(UUID().uuidString)")
+        try run(["worktree", "add", "-q", "-b", branch, wtURL.path])
+        return wtURL
+    }
+
+    /// Add a submodule from another FixtureRepo. `subPath` is the in-repo path.
+    public func addSubmodule(_ sub: FixtureRepo, at subPath: String) throws {
+        try run(["submodule", "add", "-q", sub.url.path, subPath])
     }
 
     // MARK: - Raw git
