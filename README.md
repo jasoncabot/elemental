@@ -12,7 +12,7 @@ Risk mode surfaces config, security, and infrastructure changes automatically �
 
 ## Download
 
-[**Elemental v0.1.0**](https://github.com/jasoncabot/elemental/releases/tag/v0.1.0) — requires macOS 15+
+[**Download Elemental**](https://github.com/jasoncabot/elemental/releases/latest) — requires macOS 15+
 
 ## What it is
 
