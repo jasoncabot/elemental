@@ -26,8 +26,10 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private let table = DiffTableView()
     private let scroll = NSScrollView()
     private let emptyLabel = NSTextField(labelWithString: "Select a commit to read its changes")
+    private let contentCol = NSTableColumn(identifier: .init("content"))
 
     private var rows: [Row] = []
+    private var contentColumnMinWidth: CGFloat = 0
     private var currentFileID: DiffFile.ID?
     private var collapsedHunks: Set<Int> = []
     private var noiseExpanded = false
@@ -37,11 +39,11 @@ final class DiffViewController: NSViewController, PresenterObserving {
     override func loadView() {
         let oldCol = gutterColumn("old")
         let newCol = gutterColumn("new")
-        let contentCol = NSTableColumn(identifier: .init("content"))
-        contentCol.resizingMask = .autoresizingMask
+        contentCol.resizingMask = []
         table.addTableColumn(oldCol)
         table.addTableColumn(newCol)
         table.addTableColumn(contentCol)
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         table.headerView = nil
         table.backgroundColor = .clear
         table.rowHeight = Theme.Metric.diffLineHeight
@@ -97,6 +99,19 @@ final class DiffViewController: NSViewController, PresenterObserving {
         ])
 
         view = container
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateContentColumnWidth()
+    }
+
+    private func updateContentColumnWidth() {
+        let gutterWidth: CGFloat = 46 + 46
+        let available = max(scroll.bounds.width - gutterWidth, 100)
+        let target = max(available, contentColumnMinWidth)
+        guard abs(contentCol.width - target) > 0.5 else { return }
+        contentCol.width = target
     }
 
     private func gutterColumn(_ id: String) -> NSTableColumn {
@@ -158,6 +173,12 @@ final class DiffViewController: NSViewController, PresenterObserving {
             built = [.collapsedNotice(signal: "binary", lines: 0)]
         }
         rows = built
+        let charWidth = Theme.Font.code().maximumAdvancement.width
+        contentColumnMinWidth = rows.reduce(CGFloat(0)) { best, row in
+            guard case .line(let l) = row else { return best }
+            return max(best, CGFloat(l.text.count + 2) * charWidth + 24)
+        }
+        updateContentColumnWidth()
         table.reloadData()
         if !rows.isEmpty { table.scrollRowToVisible(0) }
     }

@@ -72,7 +72,7 @@ final class AppCoordinator {
 
     func start() async {
         await bookmarkStore.restoreOnLaunch()
-        if let first = bookmarkStore.repositories.first {
+        if activeRepoURL == nil, let first = bookmarkStore.repositories.first {
             selectRepo(first.rootURL)
         }
     }
@@ -123,7 +123,8 @@ final class AppCoordinator {
         timelineVC.presenter = timeline
         filesVC.presenter = detail
         diffVC.presenter = detail
-        detail.show(sha: timeline.selectedSHA)
+        let initialCommit = timeline.selectedSHA.flatMap { timeline.commit(for: $0) }
+        detail.show(commit: initialCommit)
     }
 
     private func loadBranch(for repo: Repository) {
@@ -195,7 +196,8 @@ extension AppCoordinator: TimelineViewControllerDelegate {
     func timelineViewController(_ vc: TimelineViewController, didSelectSHA sha: String?) {
         vc.presenter?.select(sha)
         if let url = activeRepoURL {
-            commitDetailPresenters[url]?.show(sha: sha)
+            let commit = sha.flatMap { vc.presenter?.commit(for: $0) }
+            commitDetailPresenters[url]?.show(commit: commit)
         }
     }
 

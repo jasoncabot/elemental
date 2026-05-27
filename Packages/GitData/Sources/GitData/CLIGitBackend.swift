@@ -104,6 +104,22 @@ public actor CLIGitBackend: GitBackend {
         }
     }
 
+    public func commitCount(_ query: CommitQuery) async throws -> Int {
+        var args = ["rev-list", "--count"]
+        switch query.scope {
+        case .head:           args.append("HEAD")
+        case .branch(let b):  args.append(b)
+        case .ref(let r):     args.append(r)
+        case .all:            args.append("--all")
+        }
+        if let since = query.since {
+            args.append("--since=\(ISO8601DateFormatter.gitISO.string(from: since))")
+        }
+        let data = try await runner.runChecked(args, in: query.repo.rootURL)
+        let str = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int(str) ?? 0
+    }
+
     public func refs(for repo: Repository) async throws -> RefSnapshot {
         async let branchData = runner.runChecked(
             ["for-each-ref", "--format=\(RefParser.format)", "refs/heads", "refs/remotes", "refs/tags"],

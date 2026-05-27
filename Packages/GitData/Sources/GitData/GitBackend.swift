@@ -45,6 +45,7 @@ public protocol GitBackend: Sendable {
     func gitVersion() async throws -> String
     func openRepository(at url: URL) async throws -> Repository
     func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error>
+    func commitCount(_ query: CommitQuery) async throws -> Int
     func refs(for repo: Repository) async throws -> RefSnapshot
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile]
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus

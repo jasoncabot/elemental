@@ -27,6 +27,8 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
         }
     }
 
+    func commitCount(_ query: CommitQuery) async throws -> Int { commitsByScopeAll.count }
+
     func refs(for repo: Repository) async throws -> RefSnapshot {
         if let s = stubbedRefs { return s }
         return RefSnapshot(head: .detached(sha: commitsByScopeAll.first?.sha ?? ""),

@@ -119,12 +119,12 @@ final class PresenterSeamTests: XCTestCase {
         backend.diffsBySHA["x"] = [DiffFile(oldPath: nil, newPath: "f.txt", status: .added,
                                              isBinary: false, hunks: [], additions: 3, deletions: 0)]
         let presenter = CommitDetailPresenter(backend: backend, repo: repo())
-        presenter.show(sha: "x")
+        presenter.show(commit: makeCommit("x"))
         try await Task.sleep(for: .milliseconds(60))
         XCTAssertEqual(backend.diffCallCount, 1)
 
-        presenter.show(sha: nil)        // clear
-        presenter.show(sha: "x")        // re-show
+        presenter.show(commit: nil)        // clear
+        presenter.show(commit: makeCommit("x"))   // re-show
         try await Task.sleep(for: .milliseconds(60))
         XCTAssertEqual(backend.diffCallCount, 1, "second show of same SHA must be cache hit")
     }
@@ -151,6 +151,7 @@ final class PageCapturingBackend: GitBackend, @unchecked Sendable {
     func refs(for repo: Repository) async throws -> RefSnapshot {
         RefSnapshot(head: .detached(sha: ""), branches: [], remotes: [], tags: [])
     }
+    func commitCount(_ query: CommitQuery) async throws -> Int { allCommits.count }
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] { [] }
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus {
         WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,

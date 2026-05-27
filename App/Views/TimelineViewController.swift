@@ -29,8 +29,9 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     private let emptyLabel = NSTextField(labelWithString: "Drop a repository folder here")
     private var isUpdatingSelection = false
     private var lastReportedSHA: String? = nil
-    /// Identity of the currently-rendered commit set, so selection changes don't force a full reload.
     private var renderedToken: String?
+    private var renderedTotalCount: Int? = nil
+    private var scrollSettleTimer: Timer?
     private var bannerHeight: NSLayoutConstraint!
 
     // MARK: - Lifecycle
@@ -56,6 +57,13 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.automaticallyAdjustsContentInsets = true
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(clipViewBoundsChanged),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
 
         dirtyBanner.refreshButton.target = self
         dirtyBanner.refreshButton.action = #selector(refreshTapped)
@@ -97,6 +105,47 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         view = container
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        scrollSettleTimer?.invalidate()
+    }
+
+    // MARK: - Scroll handling
+
+    @objc private func clipViewBoundsChanged() {
+        // Sequential load when near the end of the current loaded window.
+        loadMoreIfNearLoadedEnd()
+
+        // After scrolling settles, check if the visible rows are outside the loaded window
+        // and jump-load from the correct position. This covers scrollbar drags.
+        scrollSettleTimer?.invalidate()
+        scrollSettleTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+            self?.loadAtCurrentScrollPosition()
+        }
+    }
+
+    private func loadMoreIfNearLoadedEnd() {
+        guard let p = presenter else { return }
+        let loadedEnd = p.baseOffset + p.commits.count
+        guard let docHeight = scrollView.documentView?.frame.height, docHeight > 0 else { return }
+        let rowHeight: CGFloat = 48
+        let visibleBottom = scrollView.contentView.bounds.maxY
+        // Trigger when the visible bottom is within ~15 rows of the loaded window's end.
+        if visibleBottom > CGFloat(loadedEnd) * rowHeight - 300 {
+            p.loadMore()
+        }
+    }
+
+    private func loadAtCurrentScrollPosition() {
+        let clipBounds = scrollView.contentView.bounds
+        let firstVisibleRow = tableView.row(at: NSPoint(x: 4, y: clipBounds.minY + 4))
+        guard firstVisibleRow >= 0, let p = presenter else { return }
+        let baseOffset = p.baseOffset
+        let loadedCount = p.commits.count
+        guard firstVisibleRow < baseOffset || firstVisibleRow >= baseOffset + loadedCount else { return }
+        p.loadFrom(row: firstVisibleRow)
+    }
+
     // MARK: - Actions
 
     @objc private func refreshTapped() {
@@ -104,9 +153,12 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     }
 
     private func move(by delta: Int) {
-        guard let commits = presenter?.commits, !commits.isEmpty else { return }
+        guard let p = presenter, !p.commits.isEmpty else { return }
+        let baseOffset = p.baseOffset
         let current = tableView.selectedRow
-        let next = min(max(current + delta, 0), commits.count - 1)
+        let minRow = baseOffset
+        let maxRow = baseOffset + p.commits.count - 1
+        let next = min(max(current + delta, minRow), maxRow)
         guard next != current else { return }
         tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         tableView.scrollRowToVisible(next)
@@ -118,26 +170,44 @@ final class TimelineViewController: NSViewController, PresenterObserving {
 
     private func reloadFromPresenter() {
         let commits = presenter?.commits ?? []
+        let baseOffset = presenter?.baseOffset ?? 0
         emptyLabel.isHidden = !commits.isEmpty
         let dirty = presenter?.isDirty ?? false
         dirtyBanner.isHidden = !dirty
         bannerHeight.constant = dirty ? 30 : 0
 
-        // Only rebuild rows when the commit set itself changed — a bare selection
-        // change must feel instant and shouldn't churn every cell.
-        let token = "\(commits.count)|\(commits.first?.sha ?? "")|\(commits.last?.sha ?? "")"
+        // Rebuild table when the loaded commit window changes (position or content).
+        let token = "\(baseOffset)|\(commits.count)|\(commits.first?.sha ?? "")|\(commits.last?.sha ?? "")"
         if token != renderedToken {
             renderedToken = token
+            renderedTotalCount = nil  // force noteNumberOfRowsChanged below
+            // reloadData() scrolls to the selected row (row 0) which snaps the view
+            // back to the top when the loaded window is far from the selection.
+            // Suppress the notification so the settle timer isn't reset by our restore.
+            let savedOrigin = scrollView.contentView.bounds.origin
             tableView.reloadData()
+            scrollView.contentView.postsBoundsChangedNotifications = false
+            scrollView.contentView.scroll(to: savedOrigin)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            DispatchQueue.main.async { [weak self] in self?.loadMoreIfNearLoadedEnd() }
+        }
+
+        // Extend row count to reflect full history so scrollbar position is accurate.
+        let newTotal = presenter?.totalCommitCount
+        if newTotal != renderedTotalCount {
+            renderedTotalCount = newTotal
+            tableView.noteNumberOfRowsChanged()
         }
 
         let currentSHA = presenter?.selectedSHA
         if let sha = currentSHA,
-           let idx = commits.firstIndex(where: { $0.sha == sha }) {
-            if tableView.selectedRow != idx {
+           let arrayIdx = commits.firstIndex(where: { $0.sha == sha }) {
+            let rowIdx = baseOffset + arrayIdx
+            if tableView.selectedRow != rowIdx {
                 isUpdatingSelection = true
-                tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-                tableView.scrollRowToVisible(idx)
+                tableView.selectRowIndexes(IndexSet(integer: rowIdx), byExtendingSelection: false)
+                tableView.scrollRowToVisible(rowIdx)
                 isUpdatingSelection = false
             }
         }
@@ -148,7 +218,6 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         }
     }
 
-    /// Rows with ref pills need extra vertical room; plain commits stay compact.
     private func hasPills(_ commit: Commit) -> Bool {
         commit.refNames.contains { name in
             let n = name.trimmingCharacters(in: .whitespaces)
@@ -160,11 +229,19 @@ final class TimelineViewController: NSViewController, PresenterObserving {
 // MARK: - Data / delegate
 
 extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { presenter?.commits.count ?? 0 }
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        let baseOffset = presenter?.baseOffset ?? 0
+        let loaded = presenter?.commits.count ?? 0
+        let total = presenter?.totalCommitCount ?? (baseOffset + loaded)
+        return max(baseOffset + loaded, total)
+    }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard let commits = presenter?.commits, row < commits.count else { return 48 }
-        return hasPills(commits[row]) ? 76 : 48
+        guard let commits = presenter?.commits else { return 48 }
+        let baseOffset = presenter?.baseOffset ?? 0
+        let idx = row - baseOffset
+        guard idx >= 0 && idx < commits.count else { return 48 }
+        return hasPills(commits[idx]) ? 76 : 48
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -172,11 +249,25 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let commits = presenter?.commits, row < commits.count else { return nil }
+        let commits = presenter?.commits ?? []
+        let baseOffset = presenter?.baseOffset ?? 0
+        let idx = row - baseOffset
+
+        // Trigger sequential load when the displayed row is within 50 of the loaded window's end.
+        if idx >= commits.count - 50 && idx < commits.count + 50 {
+            DispatchQueue.main.async { [weak self] in self?.presenter?.loadMore() }
+        }
+
+        guard idx >= 0 && idx < commits.count else {
+            let id = NSUserInterfaceItemIdentifier("TimelinePlaceholder")
+            return tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
+                ?? { let v = NSTableCellView(); v.identifier = id; return v }()
+        }
+
         let id = NSUserInterfaceItemIdentifier("TimelineCell")
         let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TimelineCellView)
             ?? TimelineCellView(identifier: id)
-        cell.configure(with: commits[row])
+        cell.configure(with: commits[idx])
         return cell
     }
 
@@ -184,7 +275,9 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
         guard !isUpdatingSelection else { return }
         let row = tableView.selectedRow
         let commits = presenter?.commits ?? []
-        let sha = (row >= 0 && row < commits.count) ? commits[row].sha : nil
+        let baseOffset = presenter?.baseOffset ?? 0
+        let idx = row - baseOffset
+        let sha = (idx >= 0 && idx < commits.count) ? commits[idx].sha : nil
         delegate?.timelineViewController(self, didSelectSHA: sha)
     }
 }

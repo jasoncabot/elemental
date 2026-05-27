@@ -73,13 +73,13 @@ final class PresenterTests: XCTestCase {
         backend.diffsBySHA["b"] = [DiffFile(oldPath: "a", newPath: "a", status: .modified,
                                             isBinary: false, hunks: [], additions: 1, deletions: 0)]
         let presenter = CommitDetailPresenter(backend: backend, repo: repo())
-        presenter.show(sha: "b")
+        presenter.show(commit: makeCommit("b"))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(presenter.files.count, 1)
         XCTAssertEqual(backend.diffCallCount, 1)
 
-        presenter.show(sha: nil)
-        presenter.show(sha: "b")           // served from cache
+        presenter.show(commit: nil)
+        presenter.show(commit: makeCommit("b"))   // served from cache
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(backend.diffCallCount, 1)
     }
