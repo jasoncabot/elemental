@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+jobs:
+  release:
+    name: Build and release DMG
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Parse version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+
+          # Create a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the certificate
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productsign
+          rm "$RUNNER_TEMP/cert.p12"
+
+          # Allow codesign to access the keychain without a password prompt
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Put the temporary keychain first in the search list
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build archive
+        run: |
+          xcodebuild archive \
+            -workspace Elemental.xcworkspace \
+            -scheme Elemental \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Elemental.xcarchive" \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            MARKETING_VERSION="${{ steps.version.outputs.VERSION }}"
+
+      - name: Create DMG
+        run: |
+          APP_PATH="$RUNNER_TEMP/Elemental.xcarchive/Products/Applications/Elemental.app"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DMG_NAME="Elemental-${VERSION}.dmg"
+          DMG_PATH="$RUNNER_TEMP/$DMG_NAME"
+
+          # Staging directory: app + Applications symlink
+          STAGE_DIR=$(mktemp -d)
+          cp -R "$APP_PATH" "$STAGE_DIR/Elemental.app"
+          ln -s /Applications "$STAGE_DIR/Applications"
+
+          # Create compressed DMG
+          hdiutil create \
+            -volname "Elemental ${VERSION}" \
+            -srcfolder "$STAGE_DIR" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+          # Sign the DMG itself
+          codesign --sign "Developer ID Application" --timestamp "$DMG_PATH"
+
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Notarize DMG
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          # Write the API key to a temp file
+          KEY_FILE="$RUNNER_TEMP/notary_key.p8"
+          echo "$NOTARY_KEY" > "$KEY_FILE"
+
+          xcrun notarytool submit "${{ env.DMG_PATH }}" \
+            --key "$KEY_FILE" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait
+
+          rm "$KEY_FILE"
+
+          # Staple the notarization ticket to the DMG
+          xcrun stapler staple "${{ env.DMG_PATH }}"
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "${{ env.KEYCHAIN_PATH }}" 2>/dev/null || true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${{ steps.version.outputs.TAG }}"
+
+          # Find the previous release tag (skip pre-releases when on a stable tag)
+          if [[ "$TAG" =~ - ]]; then
+            PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | head -1)
+          else
+            PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${TAG}$" | grep -v -- '-' | head -1)
+          fi
+
+          CHANGELOG_FILE="$RUNNER_TEMP/changelog.md"
+
+          {
+            if [ -n "$PREV_TAG" ]; then
+              echo "## What's Changed"
+              echo ""
+              git log --pretty=format:"- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))" \
+                "${PREV_TAG}..${TAG}"
+              echo ""
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+            else
+              echo "## What's Changed"
+              echo ""
+              git log --pretty=format:"- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))"
+            fi
+          } > "$CHANGELOG_FILE"
+
+          echo "CHANGELOG_FILE=$CHANGELOG_FILE" >> "$GITHUB_ENV"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Elemental ${{ steps.version.outputs.VERSION }}"
+          body_path: ${{ env.CHANGELOG_FILE }}
+          files: ${{ env.DMG_PATH }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.TAG, '-') }}
+          make_latest: ${{ !contains(steps.version.outputs.TAG, '-') }}

@@ -22,9 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let c = AppCoordinator(backend: backend, watcher: watcher)
         coordinator = c
 
+        c.windowController.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
         Task { @MainActor in
             await c.start()
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 

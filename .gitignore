@@ -35,3 +35,4 @@ Packages/.build/
 *.p12
 *.mobileprovision
 ExportOptions.plist
+TestRepositories

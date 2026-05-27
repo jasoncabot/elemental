@@ -3,9 +3,9 @@ import GitData
 import Presenters
 
 /// Composition root and navigation hub.
-/// Creates the window + view controllers, wires the bookmark store, and routes
-/// selection events across panes. All cross-pane navigation passes through here;
-/// presenters and views never talk to each other directly.
+/// Builds the toolbar + three panes (timeline / files / diff), wires the bookmark
+/// store, and routes selection across panes. Presenters and views never talk to each
+/// other directly — everything passes through here.
 @MainActor
 final class AppCoordinator {
     // MARK: - Owned objects
@@ -16,16 +16,18 @@ final class AppCoordinator {
 
     let windowController: MainWindowController
 
-    // MARK: - Child view controllers
+    private let toolbarController = ToolbarController()
+    private let timelineVC = TimelineViewController()
+    private let filesVC = FilesViewController()
+    private let diffVC = DiffViewController()
 
-    private let sidebarVC: SidebarViewController
-    private let commitListVC: CommitListViewController
-    private let detailVC: DetailViewController
-
-    // MARK: - Per-repo presenter cache (keyed by repo root URL)
-    // We keep alive timeline presenters so paging state survives sidebar re-selection.
+    // MARK: - Per-repo presenter caches (keyed by repo root URL)
 
     private var timelinePresenters: [URL: TimelinePresenter] = [:]
+    private var commitDetailPresenters: [URL: CommitDetailPresenter] = [:]
+    private var watcherTasks: [URL: Task<Void, Never>] = [:]
+    private var branchTasks: [URL: Task<Void, Never>] = [:]
+    private var activeRepoURL: URL?
 
     // MARK: - Init
 
@@ -34,121 +36,179 @@ final class AppCoordinator {
         self.watcher = watcher
         self.bookmarkStore = RepoBookmarkStore(backend: backend)
 
-        // Build view controllers
-        self.sidebarVC = SidebarViewController()
-        self.commitListVC = CommitListViewController()
-        self.detailVC = DetailViewController()
-
-        // Build window controller
         self.windowController = MainWindowController(
-            sidebarVC: sidebarVC,
-            commitListVC: commitListVC,
-            detailVC: detailVC
+            toolbarController: toolbarController,
+            timelineVC: timelineVC,
+            filesVC: filesVC,
+            diffVC: diffVC
         )
 
-        // Wire delegates (coordinator is the hub)
-        sidebarVC.delegate = self
-        commitListVC.delegate = self
+        toolbarController.delegate = self
+        timelineVC.delegate = self
+        filesVC.delegate = self
+        filesVC.reviewMode = toolbarController.reviewMode
 
-        // Bookmark store change handler
+        windowController.onDropFolders = { [weak self] urls in
+            urls.forEach { self?.addRepository(at: $0) }
+        }
+
         bookmarkStore.onRepositoriesChanged = { [weak self] in
-            self?.refreshSidebar()
+            self?.refreshRepoList()
         }
     }
 
     // MARK: - Public API (called by AppDelegate)
 
-    /// Validates and adds a repository by URL (e.g. from File > Open Repository).
     func addRepository(at url: URL) {
-        // Reuse the same validation + persist path as drag-in.
-        sidebarViewController(sidebarVC, didDropFolderAt: url)
+        Task {
+            do {
+                let repo = try await bookmarkStore.add(url: url)
+                selectRepo(repo.rootURL)
+            } catch {
+                presentNotARepoAlert(for: url)
+            }
+        }
     }
-
-    // MARK: - Launch
 
     func start() async {
         await bookmarkStore.restoreOnLaunch()
-        windowController.showWindow(nil)
-        // Auto-select the first restored repo so commits are visible without a click.
         if let first = bookmarkStore.repositories.first {
-            sidebarViewController(sidebarVC, didSelectRepo: first.rootURL)
+            selectRepo(first.rootURL)
         }
     }
 
-    // MARK: - Sidebar refresh
+    // MARK: - Repo list / selection
 
-    private func refreshSidebar() {
-        sidebarVC.items = bookmarkStore.repositories.map { repo in
-            SidebarItem(
-                id: repo.rootURL,
-                title: repo.rootURL.lastPathComponent,
-                kind: .repoGroup(rootPath: repo.rootURL.path)
-            )
+    private func refreshRepoList() {
+        let choices = bookmarkStore.repositories.map {
+            RepoChoice(id: $0.rootURL, title: $0.rootURL.lastPathComponent)
+        }
+        toolbarController.setRepos(choices, selected: activeRepoURL)
+    }
+
+    private func selectRepo(_ url: URL?) {
+        guard let url,
+              let repo = bookmarkStore.repositories.first(where: { $0.rootURL == url }) else {
+            activeRepoURL = nil
+            timelineVC.presenter = nil
+            filesVC.presenter = nil
+            diffVC.presenter = nil
+            toolbarController.setBranch(nil)
+            return
+        }
+
+        activeRepoURL = url
+        refreshRepoList()
+        loadBranch(for: repo)
+
+        let timeline: TimelinePresenter
+        if let existing = timelinePresenters[url] {
+            timeline = existing
+        } else {
+            let p = TimelinePresenter(backend: backend, watcher: watcher, repo: repo)
+            timelinePresenters[url] = p
+            timeline = p
+            p.start()
+            startWatching(repo)
+        }
+
+        let detail: CommitDetailPresenter
+        if let existing = commitDetailPresenters[url] {
+            detail = existing
+        } else {
+            detail = CommitDetailPresenter(backend: backend, repo: repo)
+            commitDetailPresenters[url] = detail
+        }
+
+        timelineVC.presenter = timeline
+        filesVC.presenter = detail
+        diffVC.presenter = detail
+        detail.show(sha: timeline.selectedSHA)
+    }
+
+    private func loadBranch(for repo: Repository) {
+        branchTasks[repo.rootURL]?.cancel()
+        branchTasks[repo.rootURL] = Task { [weak self, backend] in
+            guard let snapshot = try? await backend.refs(for: repo) else { return }
+            guard let self, self.activeRepoURL == repo.rootURL else { return }
+            let branch: String?
+            switch snapshot.head {
+            case .attached(let b, _): branch = b
+            case .unborn(let b):      branch = b
+            case .detached(let sha):  branch = String(sha.prefix(7))
+            }
+            self.toolbarController.setBranch(branch)
         }
     }
-}
 
-// MARK: - SidebarViewControllerDelegate
+    // MARK: - Watcher-based auto-removal
 
-extension AppCoordinator: SidebarViewControllerDelegate {
-    func sidebarViewController(_ vc: SidebarViewController, didDropFolderAt url: URL) {
-        Task {
-            do {
-                try await bookmarkStore.add(url: url)
-            } catch {
-                // Present a non-modal alert (best effort)
-                let alert = NSAlert()
-                alert.messageText = "Not a Git Repository"
-                alert.informativeText = "\(url.lastPathComponent) does not appear to be a git repository."
-                alert.alertStyle = .warning
-                if let window = windowController.window {
-                    await alert.beginSheetModal(for: window)
+    private func startWatching(_ repo: Repository) {
+        watcherTasks[repo.rootURL] = Task { [weak self, watcher, repo] in
+            for await _ in watcher.events(for: repo) {
+                guard let self else { return }
+                if !FileManager.default.fileExists(atPath: repo.rootURL.path) {
+                    self.removeRepo(repo)
                 }
             }
         }
     }
 
-    func sidebarViewController(_ vc: SidebarViewController, didRemoveRepoAt url: URL) {
-        guard let repo = bookmarkStore.repositories.first(where: { $0.rootURL == url }) else { return }
+    private func removeRepo(_ repo: Repository) {
+        let url = repo.rootURL
+        watcherTasks.removeValue(forKey: url)?.cancel()
+        branchTasks.removeValue(forKey: url)?.cancel()
         timelinePresenters.removeValue(forKey: url)
+        commitDetailPresenters.removeValue(forKey: url)
         bookmarkStore.remove(repo: repo)
-        commitListVC.presenter = nil
-        detailVC.showCommit(sha: nil)
+        if activeRepoURL == url {
+            selectRepo(bookmarkStore.repositories.first?.rootURL)
+        }
     }
 
-    func sidebarViewController(_ vc: SidebarViewController, didSelectRepo url: URL?) {
-        guard let url,
-              let repo = bookmarkStore.repositories.first(where: { $0.rootURL == url }) else {
-            commitListVC.presenter = nil
-            detailVC.showCommit(sha: nil)
-            return
-        }
+    // MARK: - Alerts
 
-        // Reuse or create the timeline presenter for this repo
-        let presenter: TimelinePresenter
-        if let existing = timelinePresenters[url] {
-            presenter = existing
-        } else {
-            let p = TimelinePresenter(backend: backend, watcher: watcher, repo: repo)
-            timelinePresenters[url] = p
-            presenter = p
-            p.start()
+    private func presentNotARepoAlert(for url: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Not a Git Repository"
+        alert.informativeText = "\(url.lastPathComponent) does not appear to be a git repository."
+        alert.alertStyle = .warning
+        if let window = windowController.window {
+            alert.beginSheetModal(for: window, completionHandler: nil)
         }
-        commitListVC.presenter = presenter
-        detailVC.showCommit(sha: presenter.selectedSHA)
     }
 }
 
-// MARK: - CommitListViewControllerDelegate
+// MARK: - ToolbarControllerDelegate
 
-extension AppCoordinator: CommitListViewControllerDelegate {
-    func commitListViewController(_ vc: CommitListViewController, didSelectSHA sha: String?) {
-        detailVC.showCommit(sha: sha)
-        // Also forward to the active presenter so it tracks selection
+extension AppCoordinator: ToolbarControllerDelegate {
+    func toolbarDidSelectRepo(_ url: URL) { selectRepo(url) }
+
+    func toolbarDidChangeReviewMode(_ mode: ReviewMode) { filesVC.reviewMode = mode }
+
+    func toolbarDidChangeSearch(_ query: String) { filesVC.filter = query }
+}
+
+// MARK: - TimelineViewControllerDelegate
+
+extension AppCoordinator: TimelineViewControllerDelegate {
+    func timelineViewController(_ vc: TimelineViewController, didSelectSHA sha: String?) {
         vc.presenter?.select(sha)
+        if let url = activeRepoURL {
+            commitDetailPresenters[url]?.show(sha: sha)
+        }
     }
 
-    func commitListViewControllerDidRequestRefresh(_ vc: CommitListViewController) {
+    func timelineViewControllerDidRequestRefresh(_ vc: TimelineViewController) {
         vc.presenter?.refresh()
+    }
+}
+
+// MARK: - FilesViewControllerDelegate
+
+extension AppCoordinator: FilesViewControllerDelegate {
+    func filesViewController(_ vc: FilesViewController, didSelectFile id: DiffFile.ID?) {
+        guard let url = activeRepoURL else { return }
+        commitDetailPresenters[url]?.selectFile(id)
     }
 }

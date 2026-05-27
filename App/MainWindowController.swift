@@ -1,34 +1,48 @@
 import AppKit
 
-/// Owns the main window: a three-pane NSSplitView (sidebar / commit list / detail).
-/// The coordinator builds and injects the child view controllers; this class is
-/// responsible only for layout and window bookkeeping.
+/// Owns the main window: a unified-toolbar window over a three-pane split
+/// (Commit Timeline / Subsystem Files / Immersive Diff).
+///
+/// Per the UX brief, the window leans into native materials and a transparent titlebar
+/// so content flows under the toolbar. Repositories are added by dropping a folder
+/// anywhere on the window — they are contextual state, not a permanent navigation pane.
 final class MainWindowController: NSWindowController, NSSplitViewDelegate {
 
-    private let splitView = NSSplitView()
+    private let splitView = DropSplitView()
 
-    private let sidebarVC: NSViewController
-    private let commitListVC: NSViewController
-    private let detailVC: NSViewController
+    private let timelineVC: NSViewController
+    private let filesVC: NSViewController
+    private let diffVC: NSViewController
+    private let toolbarController: ToolbarController
+
+    /// Called when the user drops one or more folders onto the window.
+    var onDropFolders: (([URL]) -> Void)?
 
     // MARK: - Init
 
-    init(sidebarVC: NSViewController,
-         commitListVC: NSViewController,
-         detailVC: NSViewController) {
-        self.sidebarVC = sidebarVC
-        self.commitListVC = commitListVC
-        self.detailVC = detailVC
+    init(toolbarController: ToolbarController,
+         timelineVC: NSViewController,
+         filesVC: NSViewController,
+         diffVC: NSViewController) {
+        self.toolbarController = toolbarController
+        self.timelineVC = timelineVC
+        self.filesVC = filesVC
+        self.diffVC = diffVC
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Elemental"
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+        window.toolbar = toolbarController.toolbar
         window.center()
         window.setFrameAutosaveName("MainWindow")
+        window.isRestorable = false
+        window.tabbingMode = .disallowed
 
         super.init(window: window)
         buildLayout()
@@ -43,22 +57,24 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.delegate = self
+        splitView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Add child views to split
-        splitView.addArrangedSubview(sidebarVC.view)
-        splitView.addArrangedSubview(commitListVC.view)
-        splitView.addArrangedSubview(detailVC.view)
+        splitView.addArrangedSubview(timelineVC.view)
+        splitView.addArrangedSubview(filesVC.view)
+        splitView.addArrangedSubview(diffVC.view)
 
-        // The split view IS the window's content. Wrap it in a container view
-        // controller so the child VCs participate in the responder/lifecycle
-        // chain. Assigning `contentViewController` makes its view the window's
-        // content view — do NOT also set `window.contentView` or it gets orphaned.
-        let container = NSViewController()
-        container.view = splitView
-        container.addChild(sidebarVC)
-        container.addChild(commitListVC)
-        container.addChild(detailVC)
-        contentViewController = container
+        splitView.onDropFolders = { [weak self] urls in self?.onDropFolders?(urls) }
+        splitView.registerForDraggedTypes([.fileURL])
+
+        window?.contentView = splitView
+
+        // Initial proportions: a narrow timeline, a medium files pane, a wide diff canvas —
+        // the brief wants the largest area reserved for the reading experience.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let width = self.window?.frame.width else { return }
+            self.splitView.setPosition(width * 0.24, ofDividerAt: 0)
+            self.splitView.setPosition(width * 0.50, ofDividerAt: 1)
+        }
     }
 
     // MARK: - NSSplitViewDelegate
@@ -67,8 +83,8 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
                    constrainMinCoordinate proposedMinimumPosition: CGFloat,
                    ofSubviewAt dividerIndex: Int) -> CGFloat {
         switch dividerIndex {
-        case 0: return 160    // sidebar minimum
-        case 1: return 400    // sidebar + commit list combined minimum
+        case 0: return 220
+        case 1: return 460
         default: return proposedMinimumPosition
         }
     }
@@ -77,28 +93,42 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
                    constrainMaxCoordinate proposedMaximumPosition: CGFloat,
                    ofSubviewAt dividerIndex: Int) -> CGFloat {
         switch dividerIndex {
-        case 0: return 320    // sidebar maximum
+        case 0: return 380
+        case 1: return splitView.bounds.width - 360
         default: return proposedMaximumPosition
         }
     }
 
-    func splitView(_ splitView: NSSplitView,
-                   resizeSubviewsWithOldSize oldSize: NSSize) {
-        let total = splitView.bounds.width
-        let dividerThickness = splitView.dividerThickness * 2
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        false
+    }
+}
 
-        let currentSidebar = splitView.subviews[0].frame.width
-        let sidebarWidth = currentSidebar > 0 ? currentSidebar : 240
-        let remaining = total - sidebarWidth - dividerThickness
-        let commitWidth = max(200, remaining * 0.4)
-        let detailWidth = max(200, remaining - commitWidth)
+// MARK: - DropSplitView
 
-        splitView.subviews[0].frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: splitView.bounds.height)
-        splitView.subviews[1].frame = NSRect(x: sidebarWidth + splitView.dividerThickness,
-                                              y: 0, width: commitWidth,
-                                              height: splitView.bounds.height)
-        splitView.subviews[2].frame = NSRect(x: sidebarWidth + splitView.dividerThickness + commitWidth + splitView.dividerThickness,
-                                              y: 0, width: detailWidth,
-                                              height: splitView.bounds.height)
+/// Split view that accepts folder drops anywhere on the window to add repositories.
+private final class DropSplitView: NSSplitView {
+    var onDropFolders: (([URL]) -> Void)?
+
+    private static let dropOptions: [NSPasteboard.ReadingOptionKey: Any] = [
+        .urlReadingFileURLsOnly: true,
+        .urlReadingContentsConformToTypes: ["public.folder"],
+    ]
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        canRead(sender) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: Self.dropOptions) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        onDropFolders?(urls)
+        return true
+    }
+
+    private func canRead(_ sender: any NSDraggingInfo) -> Bool {
+        sender.draggingPasteboard.canReadObject(
+            forClasses: [NSURL.self], options: Self.dropOptions)
     }
 }
