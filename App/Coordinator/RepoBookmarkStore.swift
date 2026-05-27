@@ -34,12 +34,16 @@ final class RepoBookmarkStore {
     func restoreOnLaunch() async {
         let saved = loadBookmarks()
         var resolved: [Repository] = []
+        var fresh: [Data] = []
         for data in saved {
-            guard let url = resolveBookmark(data) else { continue }
-            if let repo = try? await backend.openRepository(at: url) {
-                resolved.append(repo)
-            }
+            var isStale = false
+            guard let url = resolveBookmark(data, isStale: &isStale) else { continue }
+            guard let repo = try? await backend.openRepository(at: url) else { continue }
+            resolved.append(repo)
+            // Re-create bookmark from the resolved URL so moved folders stay tracked.
+            fresh.append(isStale ? (makeBookmark(for: url) ?? data) : data)
         }
+        if fresh.count != saved.count { saveBookmarks(fresh) }
         repositories = resolved
         onRepositoriesChanged?()
     }
@@ -91,15 +95,13 @@ final class RepoBookmarkStore {
         )
     }
 
-    private func resolveBookmark(_ data: Data) -> URL? {
-        var isStale = false
-        let url = try? URL(
+    private func resolveBookmark(_ data: Data, isStale: inout Bool) -> URL? {
+        try? URL(
             resolvingBookmarkData: data,
             options: [],
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
-        return url
     }
 
     private struct BookmarkFile: Codable {

@@ -67,11 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
         panel.message = "Choose a git repository folder"
-        panel.begin { [weak self] response in
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in
-                self?.coordinator?.addRepository(at: url)
-            }
+            Task { @MainActor in self?.coordinator?.addRepository(at: url) }
+        }
+        if let window = coordinator?.windowController.window {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
         }
     }
 

@@ -43,20 +43,22 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.delegate = self
-        splitView.autoresizingMask = [.width, .height]
 
         // Add child views to split
         splitView.addArrangedSubview(sidebarVC.view)
         splitView.addArrangedSubview(commitListVC.view)
         splitView.addArrangedSubview(detailVC.view)
 
-        window?.contentView = splitView
-
-        // Hold child VCs so they aren't deallocated
-        contentViewController = NSViewController()
-        contentViewController?.addChild(sidebarVC)
-        contentViewController?.addChild(commitListVC)
-        contentViewController?.addChild(detailVC)
+        // The split view IS the window's content. Wrap it in a container view
+        // controller so the child VCs participate in the responder/lifecycle
+        // chain. Assigning `contentViewController` makes its view the window's
+        // content view — do NOT also set `window.contentView` or it gets orphaned.
+        let container = NSViewController()
+        container.view = splitView
+        container.addChild(sidebarVC)
+        container.addChild(commitListVC)
+        container.addChild(detailVC)
+        contentViewController = container
     }
 
     // MARK: - NSSplitViewDelegate
@@ -85,7 +87,8 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
         let total = splitView.bounds.width
         let dividerThickness = splitView.dividerThickness * 2
 
-        let sidebarWidth = splitView.subviews[0].frame.width
+        let currentSidebar = splitView.subviews[0].frame.width
+        let sidebarWidth = currentSidebar > 0 ? currentSidebar : 240
         let remaining = total - sidebarWidth - dividerThickness
         let commitWidth = max(200, remaining * 0.4)
         let detailWidth = max(200, remaining - commitWidth)

@@ -11,31 +11,21 @@ struct GitProcessResult: Sendable {
 struct GitRunner: Sendable {
     let gitURL: URL
 
-    /// Discover git from the login-shell PATH, falling back to common locations.
+    /// Discover git by scanning PATH directly — no subprocess, never blocks the main thread.
     static func discover() throws -> GitRunner {
-        // `which git` via the user's shell so PATH matches their terminal.
-        if let path = try? runWhich(), !path.isEmpty {
-            return GitRunner(gitURL: URL(fileURLWithPath: path))
-        }
-        for candidate in ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"] {
+        let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in pathEnv.split(separator: ":").map(String.init) {
+            let candidate = URL(fileURLWithPath: dir).appendingPathComponent("git").path
             if FileManager.default.isExecutableFile(atPath: candidate) {
                 return GitRunner(gitURL: URL(fileURLWithPath: candidate))
             }
         }
+        for fallback in ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"] {
+            if FileManager.default.isExecutableFile(atPath: fallback) {
+                return GitRunner(gitURL: URL(fileURLWithPath: fallback))
+            }
+        }
         throw GitError.gitNotFound
-    }
-
-    private static func runWhich() throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        process.arguments = ["git"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Run git in `directory` and return raw output. Honors task cancellation by terminating the child.

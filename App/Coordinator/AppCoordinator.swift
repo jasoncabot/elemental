@@ -69,6 +69,10 @@ final class AppCoordinator {
     func start() async {
         await bookmarkStore.restoreOnLaunch()
         windowController.showWindow(nil)
+        // Auto-select the first restored repo so commits are visible without a click.
+        if let first = bookmarkStore.repositories.first {
+            sidebarViewController(sidebarVC, didSelectRepo: first.rootURL)
+        }
     }
 
     // MARK: - Sidebar refresh
