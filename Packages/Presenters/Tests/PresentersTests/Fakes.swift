@@ -5,6 +5,10 @@ import GitData
 final class FakeBackend: GitBackend, @unchecked Sendable {
     var commitsByScopeAll: [Commit] = []
     var diffsBySHA: [String: [DiffFile]] = [:]
+    var stagedDiffs:   [DiffFile] = []
+    var unstagedDiffs: [DiffFile] = []
+    var stubbedRefs: RefSnapshot?
+    var stubbedStatus: WorkingCopyStatus?
     private(set) var diffCallCount = 0
 
     func gitVersion() async throws -> String { "git version fake" }
@@ -22,19 +26,25 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func refs(for repo: Repository) async throws -> RefSnapshot {
-        RefSnapshot(head: .detached(sha: commitsByScopeAll.first?.sha ?? ""),
-                    branches: [], remotes: [], tags: [])
+        if let s = stubbedRefs { return s }
+        return RefSnapshot(head: .detached(sha: commitsByScopeAll.first?.sha ?? ""),
+                           branches: [], remotes: [], tags: [])
     }
 
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
         diffCallCount += 1
-        if case .commit(let sha) = range { return diffsBySHA[sha] ?? [] }
-        return []
+        switch range {
+        case .commit(let sha):     return diffsBySHA[sha] ?? []
+        case .workingStaged:       return stagedDiffs
+        case .workingUnstaged:     return unstagedDiffs
+        case .between:             return []
+        }
     }
 
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus {
-        WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,
-                          staged: [], unstaged: [], untracked: [], conflicts: [])
+        if let s = stubbedStatus { return s }
+        return WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,
+                                 staged: [], unstaged: [], untracked: [], conflicts: [])
     }
 
     func blob(at path: String, rev: String, in repo: Repository) async throws -> Data { Data() }
