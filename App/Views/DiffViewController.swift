@@ -83,7 +83,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         container.addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: container.topAnchor),
+            header.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
 

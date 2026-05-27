@@ -46,37 +46,32 @@ struct GitRunner: Sendable {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
-        let command = "git " + arguments.joined(separator: " ")
-
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GitProcessResult, Error>) in
-                let outData = LockedData()
-                outPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let chunk = handle.availableData
-                    if chunk.isEmpty {
-                        handle.readabilityHandler = nil
-                    } else {
-                        outData.append(chunk)
-                    }
-                }
-                process.terminationHandler = { proc in
-                    outPipe.fileHandleForReading.readabilityHandler = nil
-                    let remaining = outPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !remaining.isEmpty { outData.append(remaining) }
-                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                    let stderr = String(decoding: errData, as: UTF8.self)
-                    continuation.resume(returning: GitProcessResult(
-                        stdout: outData.snapshot(), stderr: stderr, exitCode: proc.terminationStatus
-                    ))
-                }
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: GitError.commandFailed(
-                        command: command, exitCode: -1, stderr: "\(error)"
-                    ))
+            try process.run()
+            // Close the parent's write ends: once the child exits, both ends are closed
+            // and the concurrent reads below receive EOF instead of blocking forever.
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
+
+            async let exitCode: Int32 = withCheckedContinuation { cont in
+                process.terminationHandler = { cont.resume(returning: $0.terminationStatus) }
+            }
+            async let outData: Data = withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .utility).async {
+                    cont.resume(returning: outPipe.fileHandleForReading.readDataToEndOfFile())
                 }
             }
+            async let errData: Data = withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .utility).async {
+                    cont.resume(returning: errPipe.fileHandleForReading.readDataToEndOfFile())
+                }
+            }
+
+            return GitProcessResult(
+                stdout: await outData,
+                stderr: String(decoding: await errData, as: UTF8.self),
+                exitCode: await exitCode
+            )
         } onCancel: {
             if process.isRunning { process.terminate() }
         }
@@ -93,12 +88,4 @@ struct GitRunner: Sendable {
         }
         return result.stdout
     }
-}
-
-/// Minimal thread-safe data accumulator for the readability handler.
-final class LockedData: @unchecked Sendable {
-    private var data = Data()
-    private let lock = NSLock()
-    func append(_ chunk: Data) { lock.lock(); data.append(chunk); lock.unlock() }
-    func snapshot() -> Data { lock.lock(); defer { lock.unlock() }; return data }
 }

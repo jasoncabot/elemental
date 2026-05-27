@@ -85,6 +85,13 @@ private final class FSEventStreamSession {
         FSEventStreamInvalidate(ref)
         FSEventStreamRelease(ref)
         streamRef = nil
+        // Drain the queue: ensures any in-flight C callback has finished
+        // dereferencing the unretained `self` pointer before we return,
+        // and cancels any pending debounce that would fire after teardown.
+        queue.sync {
+            self.debounceWorkItem?.cancel()
+            self.debounceWorkItem = nil
+        }
     }
 
     private func enqueue(_ paths: [String]) {

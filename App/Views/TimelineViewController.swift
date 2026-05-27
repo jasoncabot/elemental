@@ -28,6 +28,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     private let dirtyBanner = DirtyBannerView()
     private let emptyLabel = NSTextField(labelWithString: "Drop a repository folder here")
     private var isUpdatingSelection = false
+    private var lastReportedSHA: String? = nil
     /// Identity of the currently-rendered commit set, so selection changes don't force a full reload.
     private var renderedToken: String?
     private var bannerHeight: NSLayoutConstraint!
@@ -79,7 +80,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         bannerHeight = dirtyBanner.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
-            dirtyBanner.topAnchor.constraint(equalTo: container.topAnchor),
+            dirtyBanner.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
             dirtyBanner.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             dirtyBanner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             bannerHeight,
@@ -130,7 +131,8 @@ final class TimelineViewController: NSViewController, PresenterObserving {
             tableView.reloadData()
         }
 
-        if let sha = presenter?.selectedSHA,
+        let currentSHA = presenter?.selectedSHA
+        if let sha = currentSHA,
            let idx = commits.firstIndex(where: { $0.sha == sha }) {
             if tableView.selectedRow != idx {
                 isUpdatingSelection = true
@@ -138,6 +140,11 @@ final class TimelineViewController: NSViewController, PresenterObserving {
                 tableView.scrollRowToVisible(idx)
                 isUpdatingSelection = false
             }
+        }
+
+        if currentSHA != lastReportedSHA {
+            lastReportedSHA = currentSHA
+            delegate?.timelineViewController(self, didSelectSHA: currentSHA)
         }
     }
 

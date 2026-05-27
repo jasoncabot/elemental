@@ -88,7 +88,7 @@ final class FilesViewController: NSViewController, PresenterObserving {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            headerBar.topAnchor.constraint(equalTo: container.topAnchor),
+            headerBar.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
             headerBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             headerBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             headerBar.heightAnchor.constraint(equalToConstant: 34),

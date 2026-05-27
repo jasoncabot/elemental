@@ -38,9 +38,13 @@ echo "Looking for Developer ID Application certificates in your keychain..."
 echo ""
 
 # List matching certs with their SHA-1 fingerprints (zsh 1-based arrays)
-CERTS=("${(@f)$(security find-identity -v -p codesigning \
+set +o pipefail
+RAW_CERTS=$(security find-identity -v -p codesigning 2>/dev/null \
     | grep 'Developer ID Application' \
-    | sed -E 's/^[[:space:]]+[0-9]+\) ([A-F0-9]+) "(.+)"$/\1|\2/')}")
+    | sed -E 's/^[[:space:]]+[0-9]+\) ([A-F0-9]+) "(.+)"$/\1|\2/' \
+    || true)
+set -o pipefail
+CERTS=("${(@f)RAW_CERTS}")
 
 if [ ${#CERTS} -eq 0 ]; then
   fatal "No 'Developer ID Application' certificate found in your keychain.
@@ -71,20 +75,15 @@ echo ""
 
 P12_FILE=$(mktemp /tmp/elemental-cert-XXXX.p12)
 security export \
-  -k login.keychain-db \
+  -k ~/Library/Keychains/login.keychain-db \
   -t identities \
   -f pkcs12 \
+  -Z "$CERT_FINGERPRINT" \
   -P "$CERT_PASSWORD" \
   -o "$P12_FILE" \
-  2>/dev/null \
-  || security export \
-       -k ~/Library/Keychains/login.keychain-db \
-       -t identities \
-       -f pkcs12 \
-       -P "$CERT_PASSWORD" \
-       -o "$P12_FILE"
+  || fatal "Could not export certificate. Make sure the keychain is unlocked."
 
-CERT_B64=$(base64 -i "$P12_FILE")
+CERT_B64=$(base64 -b 0 -i "$P12_FILE")
 rm -f "$P12_FILE"
 
 # Extract the team ID from the certificate CN (format: "Name (TEAMID)")
