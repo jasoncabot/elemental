@@ -6,6 +6,7 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     var commitsByScopeAll: [Commit] = []
     var diffsBySHA: [String: [DiffFile]] = [:]
     private(set) var diffCallCount = 0
+    private(set) var loadCallCount = 0
 
     func gitVersion() async throws -> String { "git version fake" }
 
@@ -14,6 +15,7 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error> {
+        loadCallCount += 1
         let snapshot = commitsByScopeAll
         return AsyncThrowingStream { continuation in
             for c in snapshot { continuation.yield(c) }
