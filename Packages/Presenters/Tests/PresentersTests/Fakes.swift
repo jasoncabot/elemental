@@ -80,16 +80,18 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
 /// Controllable RepoWatcher: tests push DirtyEvents on demand.
 ///
 /// Thread-safe and supports multiple concurrent subscribers (e.g. when two presenters
-/// each call `events(for:)` on the same watcher). All continuations receive every fired event.
+/// each call `events(for:)` on the same watcher). Events are only delivered to subscribers
+/// that registered for the matching repository, mirroring production behavior.
 final class FakeWatcher: RepoWatcher, @unchecked Sendable {
     private let lock = NSLock()
-    private var continuations: [(id: UUID, continuation: AsyncStream<DirtyEvent>.Continuation)] = []
+    private var continuations: [(id: UUID, repoURL: URL, continuation: AsyncStream<DirtyEvent>.Continuation)] = []
 
     func events(for repo: Repository) -> AsyncStream<DirtyEvent> {
         let id = UUID()
+        let repoURL = repo.rootURL
         return AsyncStream { continuation in
             self.lock.lock()
-            self.continuations.append((id: id, continuation: continuation))
+            self.continuations.append((id: id, repoURL: repoURL, continuation: continuation))
             self.lock.unlock()
 
             continuation.onTermination = { [weak self] _ in
@@ -105,7 +107,9 @@ final class FakeWatcher: RepoWatcher, @unchecked Sendable {
         lock.lock()
         let snapshot = continuations
         lock.unlock()
-        for entry in snapshot { entry.continuation.yield(event) }
+        for entry in snapshot where entry.repoURL == event.repo.rootURL {
+            entry.continuation.yield(event)
+        }
     }
 }
 

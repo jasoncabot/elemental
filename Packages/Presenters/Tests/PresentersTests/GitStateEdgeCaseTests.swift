@@ -397,8 +397,10 @@ final class GitStateEdgeCaseTests: XCTestCase {
         presenter.start()
         await awaitCondition(on: presenter) { !presenter.isLoading }
 
-        // Dirty event + immediate refresh (user is fast)
+        // Dirty event — wait for presenter to mark itself dirty before triggering refresh
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD"]))
+        await awaitCondition(on: presenter) { presenter.isDirty }
+
         presenter.refresh()
         await awaitCondition(on: presenter) { !presenter.isLoading }
 
@@ -443,12 +445,13 @@ final class GitStateEdgeCaseTests: XCTestCase {
         await awaitCondition(on: presenterA) { !presenterA.isLoading }
         await awaitCondition(on: presenterB) { !presenterB.isLoading }
 
-        // Only fire for repoA
+        // Only fire for repoA — FakeWatcher now filters by repo like production
         watcher.fire(DirtyEvent(repo: repoA, changedPaths: ["HEAD"]))
         await awaitCondition(on: presenterA) { presenterA.isDirty }
 
-        // FakeWatcher broadcasts to all subscribers; in production each watcher.events(for:)
-        // filters by repo. This test documents that the presenter handles events gracefully.
+        // presenterB must NOT be marked dirty since the event was for repoA only
+        XCTAssertTrue(presenterA.isDirty)
+        XCTAssertFalse(presenterB.isDirty)
         XCTAssertEqual(presenterA.commits.count, 1)
         XCTAssertEqual(presenterB.commits.count, 1)
     }

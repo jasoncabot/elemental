@@ -159,12 +159,13 @@ public final class FixtureRepo {
     }
 
     /// Create a shallow clone of this repo at the given depth. Returns the clone's URL.
+    /// Uses `file://` protocol to ensure `--depth` is honoured for local repos.
     public func makeShallowClone(depth: Int = 1) throws -> URL {
         let shallowURL = url.deletingLastPathComponent()
             .appendingPathComponent("shallow-\(UUID().uuidString)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: git)
-        p.arguments = ["clone", "--depth", "\(depth)", "-q", url.path, shallowURL.path]
+        p.arguments = ["clone", "--depth", "\(depth)", "-q", url.absoluteString, shallowURL.path]
         var env = ProcessInfo.processInfo.environment
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_TERMINAL_PROMPT"] = "0"

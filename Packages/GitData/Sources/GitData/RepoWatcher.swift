@@ -83,7 +83,7 @@ private final class FSEventStreamSession {
 
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passRetained(box).toOpaque(),
+            info: Unmanaged.passUnretained(box).toOpaque(),
             retain: retainCB, release: releaseCB, copyDescription: nil
         )
         let callback: FSEventStreamCallback = { _, info, count, eventPaths, _, _ in
@@ -103,7 +103,6 @@ private final class FSEventStreamSession {
             [path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.1, flags
         ) else {
-            Unmanaged.passUnretained(box).release() // balance the passRetained above
             return
         }
         streamRef = ref
