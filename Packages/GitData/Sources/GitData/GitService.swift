@@ -11,6 +11,8 @@ import Foundation
 public actor GitService: GitBackend {
 
     private let backend: CLIGitBackend
+    /// Cached once at init so `streamCommits` (nonisolated) never re-discovers git on each call.
+    nonisolated private let runner: GitRunner
 
     // MARK: - In-flight coalescing
 
@@ -36,12 +38,15 @@ public actor GitService: GitBackend {
     // MARK: - Init
 
     public init() throws {
-        self.backend = try CLIGitBackend()
+        let r = try GitRunner.discover()
+        self.runner = r
+        self.backend = CLIGitBackend(runner: r)
     }
 
     /// Injectable for testing.
     init(backend: CLIGitBackend) {
         self.backend = backend
+        self.runner = backend.runner
     }
 
     // MARK: - GitBackend conformance
@@ -57,11 +62,12 @@ public actor GitService: GitBackend {
     /// Returns a stream that delivers `Commit` values incrementally as `git log` produces them.
     /// Cancellation of the consuming `Task` terminates the child process immediately.
     public nonisolated func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error> {
-        AsyncThrowingStream { continuation in
+        let runner = self.runner
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 // Stream incrementally — parse each commit record as bytes arrive so we never
                 // buffer the entire log in memory.
-                let stream = GitService.streamCommits(query: query)
+                let stream = GitService.streamCommits(query: query, runner: runner)
                 do {
                     for try await commit in stream {
                         if Task.isCancelled {
@@ -94,6 +100,7 @@ public actor GitService: GitBackend {
         switch range {
         case .workingUnstaged: rangeKey = "unstaged"
         case .workingStaged:   rangeKey = "staged"
+        case .workingUntracked(let path): rangeKey = "untracked:\(path)"
         case .commit(let sha): rangeKey = "commit:\(sha)"
         case .between(let a, let b): rangeKey = "between:\(a):\(b)"
         }
@@ -111,6 +118,11 @@ public actor GitService: GitBackend {
     public func blob(at path: String, rev: String, in repo: Repository) async throws -> Data {
         // blob fetches are already keyed by (path, rev) and are cheap; no coalescing needed.
         try await backend.blob(at: path, rev: rev, in: repo)
+    }
+
+    public func note(for sha: String, in repo: Repository) async throws -> String? {
+        // Per-commit, on demand, and cheap — no coalescing needed.
+        try await backend.note(for: sha, in: repo)
     }
 
     // MARK: - Coalescing helper
@@ -136,128 +148,36 @@ public actor GitService: GitBackend {
 
     /// Spawns `git log` and yields `Commit` values as they are parsed from the byte stream,
     /// record by record.  Never accumulates the full stdout in memory.  Cancellation terminates
-    /// the child process via `withTaskCancellationHandler`.
-    private static func streamCommits(
-        query: CommitQuery
-    ) -> AsyncThrowingStream<Commit, Error> {
+    /// the child process via `GitRunner.stream`.
+    private static func streamCommits(query: CommitQuery, runner: GitRunner) -> AsyncThrowingStream<Commit, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let runner = try GitRunner.discover()
-                    var args = ["log", "--parents", "--format=\(LogFormat.pretty)"]
-                    switch query.scope {
-                    case .head: break
-                    case .branch(let b): args.append(b)
-                    case .ref(let r): args.append(r)
-                    case .all: args.append("--all")
-                    }
-                    if let maxCount = query.maxCount { args.append("--max-count=\(maxCount)") }
-                    if let skip = query.skip { args.append("--skip=\(skip)") }
-                    if let since = query.since {
-                        args.append("--since=\(ISO8601DateFormatter.gitISO.string(from: since))")
-                    }
-
-                    let process = Process()
-                    process.executableURL = runner.gitURL
-                    process.arguments = args
-                    process.currentDirectoryURL = query.repo.rootURL
-
-                    var env = ProcessInfo.processInfo.environment
-                    env["GIT_OPTIONAL_LOCKS"] = "0"
-                    env["GIT_TERMINAL_PROMPT"] = "0"
-                    env["GIT_PAGER"] = "cat"
-                    process.environment = env
-
-                    let outPipe = Pipe()
-                    process.standardOutput = outPipe
-                    process.standardError = FileHandle.nullDevice
-
-                    try await withTaskCancellationHandler {
-                        try process.run()
-
-                        // Buffer for the current (possibly partial) commit record.
-                        var buffer = Data()
-                        let recordSep = LogFormat.record.data(using: .utf8)!
-
-                        // Read stdout in chunks; parse and yield complete records immediately.
-                        let byteChunks = AsyncChunksSequence(
-                            base: outPipe.fileHandleForReading.bytes, chunkSize: 4096)
-                        for try await chunk in byteChunks {
-                            if Task.isCancelled { break }
-                            buffer.append(contentsOf: chunk)
-                            // Yield every complete record we have so far.
-                            while let range = buffer.range(of: recordSep) {
-                                let recordData = buffer[buffer.startIndex..<range.upperBound]
-                                buffer.removeSubrange(buffer.startIndex..<range.upperBound)
-                                for commit in CommitParser.parse(recordData) {
-                                    if Task.isCancelled { break }
-                                    continuation.yield(commit)
-                                }
-                            }
-                        }
-
-                        // Flush any trailing bytes after EOF (no separator at very end).
-                        if !buffer.isEmpty && !Task.isCancelled {
-                            for commit in CommitParser.parse(buffer) {
+                    let args = CommitLog.revListArgs(for: query)
+                    var buffer = Data()
+                    let recordSep = LogFormat.record.data(using: .utf8)!
+                    for try await chunk in runner.stream(args, in: query.repo.rootURL) {
+                        guard !Task.isCancelled else { break }
+                        buffer.append(contentsOf: chunk)
+                        while let range = buffer.range(of: recordSep) {
+                            let recordData = buffer[buffer.startIndex..<range.upperBound]
+                            buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+                            for commit in CommitParser.parse(recordData) {
+                                guard !Task.isCancelled else { break }
                                 continuation.yield(commit)
                             }
                         }
-
-                        process.waitUntilExit()
-                        let code = process.terminationStatus
-                        if code != 0 && !Task.isCancelled {
-                            throw GitError.commandFailed(
-                                command: "git " + args.joined(separator: " "),
-                                exitCode: code, stderr: "")
-                        }
-                        if Task.isCancelled {
-                            continuation.finish(throwing: GitError.cancelled)
-                        } else {
-                            continuation.finish()
-                        }
-                    } onCancel: {
-                        if process.isRunning { process.terminate() }
                     }
+                    // Flush any trailing bytes after EOF (no separator at very end).
+                    if !buffer.isEmpty && !Task.isCancelled {
+                        for commit in CommitParser.parse(buffer) { continuation.yield(commit) }
+                    }
+                    continuation.finish(throwing: Task.isCancelled ? GitError.cancelled : nil)
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-}
-
-// MARK: - AsyncSequence chunking helper
-
-/// An `AsyncSequence` that groups `UInt8` elements from `Base` into `[UInt8]` arrays of up to
-/// `chunkSize` elements.  Used to batch single-byte reads from `FileHandle.AsyncBytes` so we
-/// pass fewer, larger `Data` chunks to the parser.
-private struct AsyncChunksSequence<Base: AsyncSequence & Sendable>: AsyncSequence, Sendable
-    where Base.Element == UInt8
-{
-    typealias Element = [UInt8]
-
-    let base: Base
-    let chunkSize: Int
-
-    struct AsyncIterator: AsyncIteratorProtocol {
-        var inner: Base.AsyncIterator
-        let chunkSize: Int
-
-        mutating func next() async throws -> [UInt8]? {
-            var chunk: [UInt8] = []
-            chunk.reserveCapacity(chunkSize)
-            while chunk.count < chunkSize {
-                guard let byte = try await inner.next() else {
-                    return chunk.isEmpty ? nil : chunk
-                }
-                chunk.append(byte)
-            }
-            return chunk
-        }
-    }
-
-    func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(inner: base.makeAsyncIterator(), chunkSize: chunkSize)
     }
 }

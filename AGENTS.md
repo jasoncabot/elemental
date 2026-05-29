@@ -2,6 +2,32 @@
 
 Guidelines for AI agents (Claude, Copilot, etc.) working in this repository.
 
+## What Elemental Is Not
+
+What Elemental *is* will evolve. What it refuses to become is fixed, and matters more.
+These are hard constraints — treat them as failing conditions, not preferences. A change
+that improves a feature while breaking one of these is a regression.
+
+- **No account. No sign-in. No backend.** There is no server to talk to, ever. Don't add
+  one, don't assume one, don't gate anything behind identity.
+- **No upload. No network for the core.** Code never leaves the machine. The entire review
+  experience must work fully offline — on a plane, on an air-gapped box, on a client's
+  confidential codebase under NDA. Network access is not "degraded mode"; it is *no part of*
+  the core path. Don't phone home, don't fetch, don't telemeter.
+- **No inference cost. No latency tax.** Opening a diff is instant. The core must be 100%
+  functional and fast with **zero LLM inference** — driven only by git metadata, file paths,
+  diff structure, syntax/heuristics. Performance is a feature.
+- **We don't sell AI.** Elemental sells *comprehension*. AI is an optional augmentation layer
+  that may make a good experience better — it must **never** gate a feature, become a
+  dependency, slow the core, or require a key/account to get value. If a feature only works
+  with AI, it's built wrong. Every AI-powered capability needs a heuristic floor that stands
+  on its own.
+- **Read-only.** Elemental never mutates the repo. No commits, no staging, no checkout, no
+  config writes. It observes; it does not touch.
+
+When in doubt, optimize for: works offline, works instantly, works on code you're not allowed
+to send anywhere.
+
 ## Testing the Git Backend
 
 The `GitData` package tests exercise the real git binary against disposable fixture repositories.

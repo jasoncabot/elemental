@@ -68,12 +68,11 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
 
         window?.contentView = splitView
 
-        // Initial proportions: a narrow timeline, a medium files pane, a wide diff canvas —
-        // the brief wants the largest area reserved for the reading experience.
+        // Initial proportions: narrow timeline (20%), medium files pane (22%), wide diff canvas (58%).
         DispatchQueue.main.async { [weak self] in
             guard let self, let width = self.window?.frame.width else { return }
-            self.splitView.setPosition(width * 0.24, ofDividerAt: 0)
-            self.splitView.setPosition(width * 0.50, ofDividerAt: 1)
+            self.splitView.setPosition(width * 0.20, ofDividerAt: 0)
+            self.splitView.setPosition(width * 0.42, ofDividerAt: 1)
         }
     }
 

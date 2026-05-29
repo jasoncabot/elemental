@@ -208,6 +208,9 @@ public final class TimelinePresenter: Presenter {
     private func apply(_ newCommits: [Commit], previousSelection: String?) {
         commits = newCommits
         indexBySHA = Dictionary(uniqueKeysWithValues: newCommits.enumerated().map { ($1.sha, $0) })
+        // A short first page means the scope is exhausted (empty repo, shallow clone, < one page).
+        // The pagination paths set this too; the initial reload must as well, or it stays `true`.
+        hasMoreCommits = newCommits.count >= pageSize
         if let previousSelection, indexBySHA[previousSelection] != nil {
             selectedSHA = previousSelection
         } else if let previousSelection, !newCommits.isEmpty {

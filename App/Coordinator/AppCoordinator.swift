@@ -25,9 +25,16 @@ final class AppCoordinator {
 
     private var timelinePresenters: [URL: TimelinePresenter] = [:]
     private var commitDetailPresenters: [URL: CommitDetailPresenter] = [:]
+    private var workingCopyPresenters: [URL: WorkingCopyPresenter] = [:]
     private var watcherTasks: [URL: Task<Void, Never>] = [:]
     private var branchTasks: [URL: Task<Void, Never>] = [:]
     private var activeRepoURL: URL?
+    /// Count of in-flight `addRepository` tasks. `start()` defers its fallback selection until
+    /// all pending adds resolve so a CLI-supplied path wins over the last-known repo.
+    private var pendingAddCount = 0
+    /// Which source currently drives the detail panes (a commit, or the working copy), so file
+    /// selections from the files pane route to the right presenter.
+    private var activeDetailSource: (any DetailSource)?
 
     // MARK: - Init
 
@@ -60,7 +67,9 @@ final class AppCoordinator {
     // MARK: - Public API (called by AppDelegate)
 
     func addRepository(at url: URL) {
+        pendingAddCount += 1
         Task {
+            defer { pendingAddCount -= 1 }
             do {
                 let repo = try await bookmarkStore.add(url: url)
                 selectRepo(repo.rootURL)
@@ -72,10 +81,21 @@ final class AppCoordinator {
 
     func start() async {
         await bookmarkStore.restoreOnLaunch()
-        if activeRepoURL == nil, let first = bookmarkStore.repositories.first {
+        // If a folder was already opened via `el <path>` / Finder (application(_:open:)), it has
+        // set the active repo and wins — don't override it. If an add is still in flight (the Task
+        // from addRepository hasn't resolved yet), also stand down — it will call selectRepo itself.
+        guard activeRepoURL == nil, pendingAddCount == 0 else { return }
+        let repos = bookmarkStore.repositories
+        let lastActive = UserDefaults.standard.string(forKey: Self.lastActiveRepoKey)
+        if let lastActive, let match = repos.first(where: { $0.rootURL.path == lastActive }) {
+            selectRepo(match.rootURL)
+        } else if let first = repos.first {
             selectRepo(first.rootURL)
         }
     }
+
+    /// UserDefaults key for the most recently active repo, restored on the next plain launch.
+    private static let lastActiveRepoKey = "lastActiveRepoPath"
 
     // MARK: - Repo list / selection
 
@@ -90,14 +110,18 @@ final class AppCoordinator {
         guard let url,
               let repo = bookmarkStore.repositories.first(where: { $0.rootURL == url }) else {
             activeRepoURL = nil
+            activeDetailSource = nil
             timelineVC.presenter = nil
-            filesVC.presenter = nil
-            diffVC.presenter = nil
+            timelineVC.workingCopyPresenter = nil
+            filesVC.source = nil
+            diffVC.source = nil
             toolbarController.setBranch(nil)
             return
         }
 
         activeRepoURL = url
+        // Remember this as the repo to restore on the next plain launch.
+        UserDefaults.standard.set(url.path, forKey: Self.lastActiveRepoKey)
         refreshRepoList()
         loadBranch(for: repo)
 
@@ -120,9 +144,22 @@ final class AppCoordinator {
             commitDetailPresenters[url] = detail
         }
 
+        let workingCopy: WorkingCopyPresenter
+        if let existing = workingCopyPresenters[url] {
+            workingCopy = existing
+        } else {
+            let p = WorkingCopyPresenter(backend: backend, watcher: watcher, repo: repo)
+            workingCopyPresenters[url] = p
+            workingCopy = p
+            p.start()
+        }
+
         timelineVC.presenter = timeline
-        filesVC.presenter = detail
-        diffVC.presenter = detail
+        timelineVC.workingCopyPresenter = workingCopy
+        // Default to reviewing the selected commit; the working-copy row is opt-in.
+        activeDetailSource = detail
+        filesVC.source = detail
+        diffVC.source = detail
         let initialCommit = timeline.selectedSHA.flatMap { timeline.commit(for: $0) }
         detail.show(commit: initialCommit)
     }
@@ -175,6 +212,7 @@ final class AppCoordinator {
         branchTasks.removeValue(forKey: url)?.cancel()
         timelinePresenters.removeValue(forKey: url)
         commitDetailPresenters.removeValue(forKey: url)
+        workingCopyPresenters.removeValue(forKey: url)
         bookmarkStore.remove(repo: repo)
         if activeRepoURL == url {
             selectRepo(bookmarkStore.repositories.first?.rootURL)
@@ -209,22 +247,34 @@ extension AppCoordinator: ToolbarControllerDelegate {
 extension AppCoordinator: TimelineViewControllerDelegate {
     func timelineViewController(_ vc: TimelineViewController, didSelectSHA sha: String?) {
         vc.presenter?.select(sha)
-        if let url = activeRepoURL {
-            let commit = sha.flatMap { vc.presenter?.commit(for: $0) }
-            commitDetailPresenters[url]?.show(commit: commit)
-        }
+        guard let url = activeRepoURL, let detail = commitDetailPresenters[url] else { return }
+        let commit = sha.flatMap { vc.presenter?.commit(for: $0) }
+        detail.show(commit: commit)
+        // Route the detail panes back to commit review.
+        activeDetailSource = detail
+        filesVC.source = detail
+        diffVC.source = detail
+    }
+
+    func timelineViewControllerDidSelectWorkingCopy(_ vc: TimelineViewController) {
+        guard let url = activeRepoURL, let workingCopy = workingCopyPresenters[url] else { return }
+        activeDetailSource = workingCopy
+        filesVC.source = workingCopy
+        diffVC.source = workingCopy
     }
 
     func timelineViewControllerDidRequestRefresh(_ vc: TimelineViewController) {
         vc.presenter?.refresh()
+        // Refresh the working copy too, so its row counts and diffs reflect the new on-disk state.
+        if let url = activeRepoURL { workingCopyPresenters[url]?.refresh() }
     }
 }
 
 // MARK: - FilesViewControllerDelegate
 
 extension AppCoordinator: FilesViewControllerDelegate {
-    func filesViewController(_ vc: FilesViewController, didSelectFile id: DiffFile.ID?) {
-        guard let url = activeRepoURL else { return }
-        commitDetailPresenters[url]?.selectFile(id)
+    func filesViewController(_ vc: FilesViewController, didSelect selection: DetailSelection?) {
+        // Route to whichever source currently drives the panes (commit or working copy).
+        activeDetailSource?.select(selection)
     }
 }

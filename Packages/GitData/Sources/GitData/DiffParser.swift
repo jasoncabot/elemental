@@ -71,6 +71,7 @@ enum DiffParser {
         private var hunkOldCount = 0
         private var hunkNewCount = 0
         private var hunkHeader = ""
+        private var hunkContext: String?
         private var hunkLines: [DiffLine] = []
         private var oldLine = 0
         private var newLine = 0
@@ -101,11 +102,7 @@ enum DiffParser {
             finishHunk()
             inHunk = true
             hunkHeader = line
-            // @@ -oldStart,oldCount +newStart,newCount @@ optional
-            let scanner = line
-            if let atRange = scanner.range(of: "@@", options: .backwards) {
-                _ = atRange
-            }
+            // @@ -oldStart,oldCount +newStart,newCount @@ <function context>
             let core = line.components(separatedBy: "@@")
             if core.count >= 2 {
                 let nums = core[1].trimmingCharacters(in: .whitespaces)
@@ -118,6 +115,13 @@ enum DiffParser {
                         hunkNewStart = start; hunkNewCount = count; newLine = start
                     }
                 }
+            }
+            // Everything after the second "@@" is git's function/section context (may be empty).
+            if core.count >= 3 {
+                let ctx = core[2...].joined(separator: "@@").trimmingCharacters(in: .whitespaces)
+                hunkContext = ctx.isEmpty ? nil : ctx
+            } else {
+                hunkContext = nil
             }
             hunkLines = []
         }
@@ -152,7 +156,7 @@ enum DiffParser {
             guard inHunk else { return }
             hunks.append(DiffHunk(oldStart: hunkOldStart, oldCount: hunkOldCount,
                                   newStart: hunkNewStart, newCount: hunkNewCount,
-                                  header: hunkHeader, lines: hunkLines))
+                                  header: hunkHeader, lines: hunkLines, context: hunkContext))
             inHunk = false
         }
 

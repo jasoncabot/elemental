@@ -11,6 +11,32 @@ struct GitProcessResult: Sendable {
 struct GitRunner: Sendable {
     let gitURL: URL
 
+    /// Config overrides forced onto *every* invocation so output is stable regardless of the
+    /// user's `~/.gitconfig` or system config. Command-line `-c` has the highest precedence in
+    /// git, so these win over any on-disk setting without mutating anything.
+    ///   - `core.quotepath=false`         emit raw UTF-8 paths, never octal-escaped (`\303\251…`).
+    ///   - `i18n.logOutputEncoding=UTF-8` force UTF-8 so commit text decodes predictably.
+    ///   - `log.showSignature=false`      never inject GPG verification lines into output.
+    ///   - `color.ui=false`               never inject ANSI escapes (with `--no-color` on diffs).
+    static let globalConfigArgs = [
+        "-c", "core.quotepath=false",
+        "-c", "i18n.logOutputEncoding=UTF-8",
+        "-c", "log.showSignature=false",
+        "-c", "color.ui=false",
+    ]
+
+    /// Environment hardening shared by every git invocation — including the bespoke streaming
+    /// process in `GitService`, which is why this is exposed rather than inlined in `run`.
+    /// Read-only, non-interactive, and isolated from system config.
+    static func hardenedEnvironment(optionalLocks: Bool) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if !optionalLocks { env["GIT_OPTIONAL_LOCKS"] = "0" }  // don't take locks for reads
+        env["GIT_TERMINAL_PROMPT"] = "0"   // never prompt for credentials
+        env["GIT_PAGER"] = "cat"           // never invoke a pager
+        env["GIT_CONFIG_NOSYSTEM"] = "1"   // ignore /etc/gitconfig for determinism
+        return env
+    }
+
     /// Discover git by scanning PATH directly — no subprocess, never blocks the main thread.
     static func discover() throws -> GitRunner {
         let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? ""
@@ -32,14 +58,9 @@ struct GitRunner: Sendable {
     func run(_ arguments: [String], in directory: URL?, optionalLocks: Bool = false) async throws -> GitProcessResult {
         let process = Process()
         process.executableURL = gitURL
-        process.arguments = arguments
+        process.arguments = GitRunner.globalConfigArgs + arguments
         if let directory { process.currentDirectoryURL = directory }
-
-        var env = ProcessInfo.processInfo.environment
-        if !optionalLocks { env["GIT_OPTIONAL_LOCKS"] = "0" }
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GIT_PAGER"] = "cat"
-        process.environment = env
+        process.environment = GitRunner.hardenedEnvironment(optionalLocks: optionalLocks)
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -87,5 +108,72 @@ struct GitRunner: Sendable {
             )
         }
         return result.stdout
+    }
+
+    /// Streams stdout from a git invocation as `[UInt8]` chunks. Cancellation terminates the child.
+    func stream(_ arguments: [String], in directory: URL?, optionalLocks: Bool = false) -> AsyncThrowingStream<[UInt8], Error> {
+        let gitURL = self.gitURL
+        let allArgs = GitRunner.globalConfigArgs + arguments
+        let env = GitRunner.hardenedEnvironment(optionalLocks: optionalLocks)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let process = Process()
+                    process.executableURL = gitURL
+                    process.arguments = allArgs
+                    if let directory { process.currentDirectoryURL = directory }
+                    process.environment = env
+                    let outPipe = Pipe()
+                    process.standardOutput = outPipe
+                    process.standardError = FileHandle.nullDevice
+                    try await withTaskCancellationHandler {
+                        try process.run()
+                        for try await chunk in ByteChunks(base: outPipe.fileHandleForReading.bytes) {
+                            guard !Task.isCancelled else { break }
+                            continuation.yield(chunk)
+                        }
+                        process.waitUntilExit()
+                        if process.terminationStatus != 0 && !Task.isCancelled {
+                            throw GitError.commandFailed(
+                                command: "git " + allArgs.joined(separator: " "),
+                                exitCode: process.terminationStatus, stderr: "")
+                        }
+                        continuation.finish(throwing: Task.isCancelled ? GitError.cancelled : nil)
+                    } onCancel: {
+                        if process.isRunning { process.terminate() }
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// Batches single-byte `AsyncBytes` reads into `[UInt8]` chunks to reduce per-byte overhead.
+struct ByteChunks<Base: AsyncSequence & Sendable>: AsyncSequence, Sendable where Base.Element == UInt8 {
+    typealias Element = [UInt8]
+    let base: Base
+    var chunkSize: Int = 4096
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        var inner: Base.AsyncIterator
+        let chunkSize: Int
+        mutating func next() async throws -> [UInt8]? {
+            var chunk: [UInt8] = []
+            chunk.reserveCapacity(chunkSize)
+            while chunk.count < chunkSize {
+                guard let byte = try await inner.next() else {
+                    return chunk.isEmpty ? nil : chunk
+                }
+                chunk.append(byte)
+            }
+            return chunk
+        }
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(inner: base.makeAsyncIterator(), chunkSize: chunkSize)
     }
 }

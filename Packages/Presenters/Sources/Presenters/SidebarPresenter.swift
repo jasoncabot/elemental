@@ -9,9 +9,12 @@ public final class SidebarPresenter: Presenter {
 
     public struct RepoItem: Sendable {
         public let repo: Repository
-        public var refs: RefSnapshot?
-        public var isLoadingRefs: Bool
-        public var refError: Error?
+        /// Load state of this repo's refs — the single source of truth for refs/loading/error.
+        public var refsState: Loadable<RefSnapshot> = .idle
+
+        public var refs: RefSnapshot? { refsState.value }
+        public var isLoadingRefs: Bool { refsState.isLoading }
+        public var refError: Error? { refsState.error }
 
         public var branches: [Ref] { refs?.branches ?? [] }
         public var remotes:  [Ref] { refs?.remotes  ?? [] }
@@ -19,9 +22,6 @@ public final class SidebarPresenter: Presenter {
 
         public init(repo: Repository) {
             self.repo = repo
-            self.refs = nil
-            self.isLoadingRefs = false
-            self.refError = nil
         }
     }
 
@@ -112,7 +112,7 @@ public final class SidebarPresenter: Presenter {
 
     private func loadRefs(for repo: Repository) {
         refLoadTasks[repo.rootURL]?.cancel()
-        updateItem(repo: repo) { $0.isLoadingRefs = true; $0.refError = nil }
+        updateItem(repo: repo) { $0.refsState = .loading }
         notify()
 
         refLoadTasks[repo.rootURL] = Task { [weak self, backend, repo] in
@@ -120,18 +120,11 @@ public final class SidebarPresenter: Presenter {
             do {
                 let snapshot = try await backend.refs(for: repo)
                 if Task.isCancelled { return }
-                self.updateItem(repo: repo) {
-                    $0.refs = snapshot
-                    $0.isLoadingRefs = false
-                    $0.refError = nil
-                }
+                self.updateItem(repo: repo) { $0.refsState = .loaded(snapshot) }
             } catch is CancellationError {
                 return
             } catch {
-                self.updateItem(repo: repo) {
-                    $0.isLoadingRefs = false
-                    $0.refError = error
-                }
+                self.updateItem(repo: repo) { $0.refsState = .failed(error) }
             }
             self.notify()
         }

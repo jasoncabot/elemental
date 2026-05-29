@@ -83,8 +83,22 @@ struct FileAnalysis {
     let file: DiffFile
     let signals: [FileSignal]
     let risk: RiskLevel
-    /// Whether this file is low-signal noise that should collapse by default.
-    let isNoise: Bool
+    /// Fraction (0–1) of this file's changed lines that are churn — whitespace-only or moved —
+    /// rather than substantive edits. Derived by counting `DiffAnnotator`'s per-line labels, so
+    /// it means something concrete ("88% of this change is formatting"), not a tuned dial.
+    let noiseRatio: Double
+
+    /// A file is collapsible noise when it's structurally low-signal (lockfiles, generated,
+    /// non-security dependency bumps) *or* almost entirely churn. Derived, not stored.
+    var isNoise: Bool {
+        signals.contains(.lockfile)
+            || signals.contains(.generated)
+            || (signals.contains(.dependency) && !signals.contains(.security))
+            || noiseRatio >= Self.noiseThreshold
+    }
+
+    /// At/above this churn fraction a file collapses by default — almost nothing here is a real edit.
+    static let noiseThreshold = 0.9
 
     var displayPath: String { file.displayPath }
     var fileName: String { (file.displayPath as NSString).lastPathComponent }
@@ -160,11 +174,17 @@ struct FileAnalysis {
             risk = max(risk, .medium)
         }
 
-        let isNoise = signals.contains(.lockfile)
-            || signals.contains(.generated)
-            || (signals.contains(.dependency) && !signals.contains(.security))
+        // Churn fraction: how much of the diff is whitespace/moved vs substantive (see DiffAnnotator).
+        var changedLines = 0, churnLines = 0
+        for hunk in file.hunks {
+            for line in hunk.lines where line.kind != .context {
+                changedLines += 1
+                if line.change != .substantive { churnLines += 1 }
+            }
+        }
+        let noiseRatio = changedLines == 0 ? 0 : Double(churnLines) / Double(changedLines)
 
-        return FileAnalysis(file: file, signals: signals, risk: risk, isNoise: isNoise)
+        return FileAnalysis(file: file, signals: signals, risk: risk, noiseRatio: noiseRatio)
     }
 
     static func statusKind(_ status: DiffStatus) -> DiffStatusKind {

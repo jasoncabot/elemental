@@ -58,6 +58,35 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(files[0].newPath, "new.txt")
     }
 
+    func testParsesFunctionContextFromHunkHeader() {
+        let patch = """
+        diff --git a/a.swift b/a.swift
+        --- a/a.swift
+        +++ b/a.swift
+        @@ -10,3 +10,4 @@ func handleLogin() {
+         existing
+        -old
+        +new
+        +added
+        """
+        let files = DiffParser.parse(patch)
+        XCTAssertEqual(files.first?.hunks.first?.context, "func handleLogin() {")
+    }
+
+    func testHunkWithoutContextHasNilContext() {
+        let patch = """
+        diff --git a/a.swift b/a.swift
+        --- a/a.swift
+        +++ b/a.swift
+        @@ -1,2 +1,2 @@
+        -a
+        +b
+         c
+        """
+        let files = DiffParser.parse(patch)
+        XCTAssertNil(files.first?.hunks.first?.context)
+    }
+
     func testMalformedInputDoesNotCrash() {
         let garbage = ["", "@@ totally broken", "diff --git", "+++ ", "@@ -x,y +z @@\n+a",
                        "\u{0}\u{1}\u{2}random bytes", String(repeating: "@@", count: 1000)]

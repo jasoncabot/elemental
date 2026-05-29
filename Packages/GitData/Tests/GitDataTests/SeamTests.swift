@@ -140,11 +140,12 @@ final class SeamTests: XCTestCase {
         XCTAssertEqual(head.sha, sha)
         XCTAssertTrue(head.subject.contains("🚀"), "emoji must survive log parsing: \(head.subject)")
 
-        // The diff must include at least one file entry for the non-ASCII path; git may
-        // octal-escape the path in output (core.quotepath default), so we only assert the
-        // file appears (non-empty diff) rather than the exact path string.
+        // The backend forces core.quotepath=false, so the path is emitted raw (not octal-escaped)
+        // and must round-trip intact through DiffFile.displayPath.
         let files = try await backend.diff(.commit(sha), in: repo)
         XCTAssertFalse(files.isEmpty, "non-ASCII commit must produce at least one DiffFile")
+        XCTAssertTrue(files.contains { $0.displayPath.contains("résumé") },
+                      "non-ASCII path must round-trip unescaped: \(files.map(\.displayPath))")
     }
 
     // MARK: - Binary file
@@ -753,7 +754,7 @@ final class SeamTests: XCTestCase {
     func testAnnotatedTagAppearsInRefs() async throws {
         let fixture = try FixtureRepo()
         try fixture.writeFile("a.txt", "1")
-        let sha = try fixture.commit("tagged")
+        _ = try fixture.commit("tagged")
         try fixture.run(["tag", "-a", "v2.0.0", "-m", "release v2"])
 
         let backend = try makeBackend()
@@ -1006,7 +1007,9 @@ final class SeamTests: XCTestCase {
         let subWorkDir = fixture.url.appendingPathComponent("vendor/lib")
         let subProcess = Process()
         subProcess.executableURL = URL(fileURLWithPath: FixtureRepo.discoverGit())
-        subProcess.arguments = ["-C", subWorkDir.path, "commit", "--allow-empty", "-m", "dirty"]
+        // -c commit.gpgsign=false so a host that signs commits by default can't make this fail.
+        subProcess.arguments = ["-C", subWorkDir.path, "-c", "commit.gpgsign=false",
+                                "commit", "--allow-empty", "-m", "dirty"]
         var env = ProcessInfo.processInfo.environment
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_TERMINAL_PROMPT"] = "0"

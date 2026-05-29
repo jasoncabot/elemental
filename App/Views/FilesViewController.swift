@@ -4,7 +4,7 @@ import Presenters
 
 @MainActor
 protocol FilesViewControllerDelegate: AnyObject {
-    func filesViewController(_ vc: FilesViewController, didSelectFile id: DiffFile.ID?)
+    func filesViewController(_ vc: FilesViewController, didSelect selection: DetailSelection?)
 }
 
 /// The middle column: a lightweight architectural view of the change.
@@ -15,10 +15,10 @@ protocol FilesViewControllerDelegate: AnyObject {
 final class FilesViewController: NSViewController, PresenterObserving {
     weak var delegate: FilesViewControllerDelegate?
 
-    var presenter: CommitDetailPresenter? {
+    var source: (any DetailSource)? {
         didSet {
             oldValue?.removeObserver(self)
-            presenter?.addObserver(self)
+            source?.addObserver(self)
             rebuild()
         }
     }
@@ -32,16 +32,20 @@ final class FilesViewController: NSViewController, PresenterObserving {
     }
 
     private enum Node {
-        case group(Subsystem)
-        case file(FileAnalysis)
+        case group(DetailSection)
+        /// A directory folder inside a working-copy area section.
+        case dir(area: DetailArea, directory: String, files: [FileAnalysis])
+        /// `area` is nil for commit review; set for working-copy areas so the same path under both
+        /// Staged and Unstaged remains two distinct, independently-selectable rows.
+        case file(area: DetailArea?, FileAnalysis)
     }
 
     private let outlineView = NSOutlineView()
     private let scrollView = NSScrollView()
-    private let headerLabel = NSTextField(labelWithString: "")
+    private let commitSummary = CommitSummaryView()
     private let emptyLabel = NSTextField(labelWithString: "No changes")
 
-    private var groups: [Subsystem] = []
+    private var sections: [DetailSection] = []
     private var isUpdatingSelection = false
 
     // MARK: - Lifecycle
@@ -68,13 +72,7 @@ final class FilesViewController: NSViewController, PresenterObserving {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
-        headerLabel.font = Theme.Font.sectionHeader
-        headerLabel.textColor = .secondaryLabelColor
-        headerLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let headerBar = NSView()
-        headerBar.translatesAutoresizingMaskIntoConstraints = false
-        headerBar.addSubview(headerLabel)
+        commitSummary.translatesAutoresizingMaskIntoConstraints = false
 
         emptyLabel.font = Theme.Font.secondary
         emptyLabel.textColor = .tertiaryLabelColor
@@ -82,20 +80,17 @@ final class FilesViewController: NSViewController, PresenterObserving {
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()
-        container.addSubview(headerBar)
+        container.addSubview(commitSummary)
         container.addSubview(scrollView)
         container.addSubview(emptyLabel)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            headerBar.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
-            headerBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            headerBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            headerBar.heightAnchor.constraint(equalToConstant: 34),
-            headerLabel.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor, constant: 16),
-            headerLabel.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
+            commitSummary.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
+            commitSummary.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            commitSummary.trailingAnchor.constraint(equalTo: container.trailingAnchor),
 
-            scrollView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: commitSummary.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -112,39 +107,51 @@ final class FilesViewController: NSViewController, PresenterObserving {
     func presenterDidUpdate(_ presenter: AnyObject) { rebuild() }
 
     private func rebuild() {
-        let allFiles = presenter?.files ?? []
-        let files = filter.isEmpty
-            ? allFiles
-            : allFiles.filter { $0.displayPath.localizedCaseInsensitiveContains(filter) }
+        let rawSections = source?.sections(reviewMode: reviewMode) ?? []
+        // Apply the file-name filter within each section, dropping sections left empty.
+        sections = rawSections.compactMap { section in
+            guard !filter.isEmpty else { return section }
+            let kept = section.files.filter { $0.displayPath.localizedCaseInsensitiveContains(filter) }
+            return kept.isEmpty ? nil : DetailSection(title: section.title, area: section.area, files: kept)
+        }
 
-        // Boxes capture the data they wrap, so they must be rebuilt whenever the data
-        // does — otherwise a reused box (e.g. a group named "App") would still vend the
-        // previous repo's files.
+        // Boxes capture the data they wrap, so they must be rebuilt whenever the data does —
+        // otherwise a reused box would still vend the previous selection's files.
         groupBoxes.removeAll()
+        dirBoxes.removeAll()
         fileBoxes.removeAll()
-        groups = FileOrganizer.organize(files, mode: reviewMode)
+        dirGroupCache.removeAll()
 
+        let files = sections.flatMap(\.files)
         let total = files.count
-        let adds = files.reduce(0) { $0 + $1.additions }
-        let dels = files.reduce(0) { $0 + $1.deletions }
-        headerLabel.stringValue = total == 0
+        let adds = files.reduce(0) { $0 + $1.file.additions }
+        let dels = files.reduce(0) { $0 + $1.file.deletions }
+        commitSummary.configure(header: source?.header ?? .none)
+        commitSummary.setStats(total == 0
             ? "CHANGES"
-            : "\(total) FILE\(total == 1 ? "" : "S")   +\(adds)  −\(dels)"
+            : "\(total) FILE\(total == 1 ? "" : "S")   +\(adds)  −\(dels)")
         emptyLabel.isHidden = total > 0
 
         outlineView.reloadData()
 
-        // In Risk/File modes there is a single anonymous group — expand everything.
-        for group in groups { outlineView.expandItem(boxed(group)) }
-        // Cache boxes so expansion + selection share identity.
+        // Expand every group; for working-copy areas also expand their directory sub-groups.
+        for section in sections {
+            outlineView.expandItem(boxed(section))
+            if let area = section.area {
+                for (dir, files) in dirGroups(in: section) {
+                    outlineView.expandItem(boxedDir(area: area, dir: dir, files: files))
+                }
+            }
+        }
         syncSelection()
     }
 
     private func syncSelection() {
-        guard let selected = presenter?.selectedFile else { return }
-        for group in groups {
-            if let fa = group.files.first(where: { $0.file.id == selected }) {
-                let row = outlineView.row(forItem: boxed(fa))
+        guard let selected = source?.selection else { return }
+        for section in sections {
+            guard section.area == selected.area else { continue }
+            if let fa = section.files.first(where: { matches(selected, area: section.area, fa: $0) }) {
+                let row = outlineView.row(forItem: boxed(fa, area: section.area))
                 if row >= 0, outlineView.selectedRow != row {
                     isUpdatingSelection = true
                     outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -155,6 +162,23 @@ final class FilesViewController: NSViewController, PresenterObserving {
         }
     }
 
+    /// Commit selection keys by `DiffFile.id`; working-copy selection keys by path (so the same
+    /// path can be selected independently under Staged and Unstaged).
+    private func matches(_ sel: DetailSelection, area: DetailArea?, fa: FileAnalysis) -> Bool {
+        guard area == sel.area else { return false }
+        return area == nil ? fa.file.id == sel.fileID : fa.displayPath == sel.fileID
+    }
+
+    private func selection(for fa: FileAnalysis, area: DetailArea?) -> DetailSelection {
+        area == nil ? DetailSelection(area: nil, fileID: fa.file.id)
+                    : DetailSelection(area: area, fileID: fa.displayPath)
+    }
+
+    /// Whether the only section is anonymous (commit Risk/File mode), so it renders flat.
+    private var isFlat: Bool {
+        sections.count == 1 && (sections[0].title ?? "").isEmpty
+    }
+
     // MARK: - Identity boxing
     // NSOutlineView needs stable reference items; we memoize boxes per rebuild.
 
@@ -162,16 +186,46 @@ final class FilesViewController: NSViewController, PresenterObserving {
         let node: Node
         init(_ node: Node) { self.node = node }
     }
-    private var groupBoxes: [String: Box] = [:]
-    private var fileBoxes: [String: Box] = [:]
+    private var groupBoxes:    [String: Box] = [:]
+    private var dirBoxes:      [String: Box] = [:]
+    private var fileBoxes:     [String: Box] = [:]
+    private var dirGroupCache: [String: [(dir: String, files: [FileAnalysis])]] = [:]
 
-    private func boxed(_ group: Subsystem) -> Box {
-        if let b = groupBoxes[group.name] { return b }
-        let b = Box(.group(group)); groupBoxes[group.name] = b; return b
+    private func boxKey(_ area: DetailArea?, _ id: String) -> String {
+        "\(area.map(String.init(describing:)) ?? "_"):\(id)"
     }
-    private func boxed(_ file: FileAnalysis) -> Box {
-        if let b = fileBoxes[file.file.id] { return b }
-        let b = Box(.file(file)); fileBoxes[file.file.id] = b; return b
+
+    private func boxed(_ section: DetailSection) -> Box {
+        let key = boxKey(section.area, section.title ?? "")
+        if let b = groupBoxes[key] { return b }
+        let b = Box(.group(section)); groupBoxes[key] = b; return b
+    }
+    private func boxedDir(area: DetailArea, dir: String, files: [FileAnalysis]) -> Box {
+        let key = boxKey(area, "dir:\(dir)")
+        if let b = dirBoxes[key] { return b }
+        let b = Box(.dir(area: area, directory: dir, files: files)); dirBoxes[key] = b; return b
+    }
+    private func boxed(_ file: FileAnalysis, area: DetailArea?) -> Box {
+        let key = boxKey(area, file.displayPath + ":" + file.file.id)
+        if let b = fileBoxes[key] { return b }
+        let b = Box(.file(area: area, file)); fileBoxes[key] = b; return b
+    }
+
+    /// Groups files in a working-copy section by their directory, preserving insertion order.
+    /// Memoized per rebuild — the result for a given section is computed at most once.
+    private func dirGroups(in section: DetailSection) -> [(dir: String, files: [FileAnalysis])] {
+        let key = boxKey(section.area, section.title ?? "")
+        if let cached = dirGroupCache[key] { return cached }
+        var order: [String] = []
+        var groups: [String: [FileAnalysis]] = [:]
+        for fa in section.files {
+            let dir = fa.directory
+            if groups[dir] == nil { order.append(dir) }
+            groups[dir, default: []].append(fa)
+        }
+        let result = order.map { (dir: $0, files: groups[$0]!) }
+        dirGroupCache[key] = result
+        return result
     }
 }
 
@@ -180,26 +234,55 @@ final class FilesViewController: NSViewController, PresenterObserving {
 extension FilesViewController: NSOutlineViewDataSource {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if item == nil {
-            // A single empty-named group is rendered flat (no group header).
-            if groups.count == 1, groups[0].name.isEmpty { return groups[0].files.count }
-            return groups.count
+            if isFlat { return sections.first?.files.count ?? 0 }
+            return sections.count
         }
-        guard let box = item as? Box, case .group(let g) = box.node else { return 0 }
-        return g.files.count
+        guard let box = item as? Box else { return 0 }
+        switch box.node {
+        case .group(let section):
+            return section.area != nil ? dirGroups(in: section).count : section.files.count
+        case .dir(_, _, let files):
+            return files.count
+        case .file:
+            return 0
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        let fallback = Box(.group(DetailSection(title: "", area: nil, files: [])))
         if item == nil {
-            if groups.count == 1, groups[0].name.isEmpty { return boxed(groups[0].files[index]) }
-            return boxed(groups[index])
+            if isFlat {
+                guard !sections.isEmpty, index < sections[0].files.count else { return fallback }
+                return boxed(sections[0].files[index], area: sections[0].area)
+            }
+            guard index < sections.count else { return fallback }
+            return boxed(sections[index])
         }
-        guard let box = item as? Box, case .group(let g) = box.node else { return Box(.group(Subsystem(name: "", files: []))) }
-        return boxed(g.files[index])
+        guard let box = item as? Box else { return fallback }
+        switch box.node {
+        case .group(let section):
+            if section.area != nil {
+                let dirs = dirGroups(in: section)
+                guard index < dirs.count else { return fallback }
+                let (dir, files) = dirs[index]
+                return boxedDir(area: section.area!, dir: dir, files: files)
+            }
+            guard index < section.files.count else { return fallback }
+            return boxed(section.files[index], area: nil)
+        case .dir(let area, _, let files):
+            guard index < files.count else { return fallback }
+            return boxed(files[index], area: area)
+        case .file:
+            return fallback
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        guard let box = item as? Box, case .group = box.node else { return false }
-        return true
+        guard let box = item as? Box else { return false }
+        switch box.node {
+        case .group, .dir: return true
+        case .file:        return false
+        }
     }
 }
 
@@ -208,8 +291,11 @@ extension FilesViewController: NSOutlineViewDataSource {
 extension FilesViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
         guard let box = item as? Box else { return Theme.Metric.fileRowHeight }
-        if case .group = box.node { return Theme.Metric.groupRowHeight }
-        return Theme.Metric.fileRowHeight
+        switch box.node {
+        case .group: return Theme.Metric.groupRowHeight
+        case .dir:   return Theme.Metric.groupRowHeight
+        case .file:  return Theme.Metric.fileRowHeight
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool { false }
@@ -217,17 +303,26 @@ extension FilesViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let box = item as? Box else { return nil }
         switch box.node {
-        case .group(let g):
+        case .group(let section):
             let id = NSUserInterfaceItemIdentifier("GroupCell")
             let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? SubsystemHeaderView)
                 ?? SubsystemHeaderView(identifier: id)
-            cell.configure(with: g)
+            cell.configure(with: Subsystem(name: section.title ?? "", files: section.files),
+                           isArea: section.area != nil)
             return cell
-        case .file(let fa):
+        case .dir(_, let directory, _):
+            let id = NSUserInterfaceItemIdentifier("DirCell")
+            let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? DirRowView)
+                ?? DirRowView(identifier: id)
+            cell.configure(directory: directory.isEmpty ? "/" : directory)
+            return cell
+        case .file(let area, let fa):
             let id = NSUserInterfaceItemIdentifier("FileCell")
             let cell = (outlineView.makeView(withIdentifier: id, owner: self) as? FileRowView)
                 ?? FileRowView(identifier: id)
-            cell.configure(with: fa, showDirectory: reviewMode != .narrative)
+            // In working-copy mode files live under directory nodes, so no inline directory needed.
+            // In commit mode (area == nil) show directory when not in narrative grouping.
+            cell.configure(with: fa, showDirectory: area == nil && reviewMode != .narrative)
             return cell
         }
     }
@@ -236,8 +331,8 @@ extension FilesViewController: NSOutlineViewDelegate {
         guard !isUpdatingSelection else { return }
         let row = outlineView.selectedRow
         guard row >= 0, let box = outlineView.item(atRow: row) as? Box,
-              case .file(let fa) = box.node else { return }
-        delegate?.filesViewController(self, didSelectFile: fa.file.id)
+              case .file(let area, let fa) = box.node else { return }
+        delegate?.filesViewController(self, didSelect: selection(for: fa, area: area))
     }
 }
 
@@ -293,11 +388,53 @@ private final class SubsystemHeaderView: NSTableCellView {
         riskDot.layer?.cornerRadius = 3
     }
 
-    func configure(with group: Subsystem) {
+    func configure(with group: Subsystem, isArea: Bool = false) {
+        // Working-copy area headers ("Staged"/"Unstaged"/"Untracked") read as trees, not folders.
+        icon.image = NSImage(systemSymbolName: isArea ? "tray.full" : "folder.fill",
+                             accessibilityDescription: nil)
         nameLabel.stringValue = group.displayName
         countLabel.stringValue = "+\(group.additions)  −\(group.deletions)"
         riskDot.layer?.backgroundColor = group.risk == .low ? NSColor.clear.cgColor : group.risk.tint.cgColor
         riskDot.isHidden = group.risk == .low
+    }
+}
+
+// MARK: - Directory row cell (working-copy tree)
+
+private final class DirRowView: NSTableCellView {
+    private let icon = NSImageView()
+    private let nameLabel = NSTextField(labelWithString: "")
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+
+        icon.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        icon.contentTintColor = .secondaryLabelColor
+        icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.font = Theme.Font.caption
+        nameLabel.textColor = .secondaryLabelColor
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        addSubview(icon); addSubview(nameLabel)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            nameLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5),
+            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+        ])
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(directory: String) {
+        nameLabel.stringValue = directory
     }
 }
 
@@ -389,11 +526,15 @@ private final class FileRowView: NSTableCellView {
         icon.contentTintColor = fa.isNoise ? .tertiaryLabelColor : .secondaryLabelColor
 
         nameLabel.stringValue = fa.fileName
-        nameLabel.textColor = fa.isNoise ? .secondaryLabelColor : .labelColor
+        // Convey add/modify/delete by color (the status bar carries it positionally too); noise
+        // recedes regardless of status. Status is also announced via the accessibility label below,
+        // so it never depends on color alone.
+        nameLabel.textColor = fa.isNoise ? .secondaryLabelColor : Theme.Color.statusText(fa.statusKind)
 
         dirLabel.stringValue = (showDirectory && !fa.directory.isEmpty) ? fa.directory : ""
         dirLabel.isHidden = dirLabel.stringValue.isEmpty
         toolTip = fa.displayPath
+        setAccessibilityLabel("\(Self.statusWord(fa.file.status)): \(fa.displayPath)")
 
         signalStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for signal in fa.signals.prefix(2) {
@@ -410,5 +551,176 @@ private final class FileRowView: NSTableCellView {
                 attributes: [.foregroundColor: Theme.Color.delStat, .font: Theme.Font.caption]))
         }
         statLabel.attributedStringValue = stat
+    }
+
+    /// Spoken status for VoiceOver — the non-color cue that pairs with the colored filename.
+    static func statusWord(_ status: DiffStatus) -> String {
+        switch status {
+        case .added:       return "Added"
+        case .untracked:   return "New"
+        case .deleted:     return "Deleted"
+        case .modified:    return "Modified"
+        case .renamed:     return "Renamed"
+        case .copied:      return "Copied"
+        case .typeChanged: return "Type changed"
+        case .unmerged:    return "Conflicted"
+        case .ignored:     return "Ignored"
+        }
+    }
+}
+
+// MARK: - Commit summary (the "why" above the file list)
+
+/// Shows the reviewed commit's message — subject, body, metadata — plus any git note, so the
+/// intent behind the change sits alongside the files it touched. Pure git metadata; no AI.
+private final class CommitSummaryView: NSView {
+    private let subjectLabel = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let bodyLabel = NSTextField(labelWithString: "")
+    private let noteLabel = NSTextField(labelWithString: "")
+    private let statsLabel = NSTextField(labelWithString: "")
+    private let stack = NSStackView()
+    private let divider = NSBox()
+    private static let hInset: CGFloat = 16
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        subjectLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        subjectLabel.maximumNumberOfLines = 2
+        subjectLabel.lineBreakMode = .byTruncatingTail
+
+        metaLabel.font = Theme.Font.secondary
+        metaLabel.textColor = .secondaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingTail
+
+        bodyLabel.font = Theme.Font.secondary
+        bodyLabel.textColor = .secondaryLabelColor
+        bodyLabel.maximumNumberOfLines = 6
+        bodyLabel.lineBreakMode = .byTruncatingTail
+
+        noteLabel.font = Theme.Font.secondary
+        noteLabel.textColor = .secondaryLabelColor
+        noteLabel.maximumNumberOfLines = 4
+        noteLabel.lineBreakMode = .byTruncatingTail
+
+        statsLabel.font = Theme.Font.caption
+        statsLabel.textColor = .tertiaryLabelColor
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for label in [subjectLabel, metaLabel, bodyLabel, noteLabel, statsLabel] {
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            stack.addArrangedSubview(label)
+            label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        addSubview(divider)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset),
+            stack.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -10),
+            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        // Multiline labels need an explicit wrapping width to compute their height.
+        let width = bounds.width - Self.hInset * 2
+        for label in [subjectLabel, bodyLabel, noteLabel] { label.preferredMaxLayoutWidth = width }
+    }
+
+    func setStats(_ text: String) { statsLabel.stringValue = text }
+
+    func configure(header: DetailHeader) {
+        switch header {
+        case .none:
+            [subjectLabel, metaLabel, bodyLabel, noteLabel].forEach { $0.isHidden = true }
+        case .commit(let commit, let note):
+            configureCommit(commit, note: note)
+        case .workingCopy(let branch, let staged, let unstaged, let untracked, let prepared):
+            configureWorkingCopy(branch: branch, staged: staged, unstaged: unstaged,
+                                 untracked: untracked, prepared: prepared)
+        }
+    }
+
+    /// The working copy's "why": a draft commit message if git has one prepared, plus the branch
+    /// and a staged/unstaged/untracked tally. No SHA exists yet, so there's no git note.
+    private func configureWorkingCopy(branch: String?, staged: Int, unstaged: Int,
+                                      untracked: Int, prepared: String?) {
+        subjectLabel.isHidden = false
+        subjectLabel.stringValue = "Uncommitted Changes"
+        subjectLabel.textColor = .labelColor
+
+        var parts: [String] = []
+        if let branch { parts.append("⎇ \(branch)") }
+        parts.append("\(staged) staged")
+        parts.append("\(unstaged) unstaged")
+        if untracked > 0 { parts.append("\(untracked) untracked") }
+        metaLabel.isHidden = false
+        metaLabel.stringValue = parts.joined(separator: " · ")
+        metaLabel.toolTip = nil
+
+        let draft = (prepared ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        bodyLabel.isHidden = draft.isEmpty
+        bodyLabel.stringValue = draft
+        bodyLabel.toolTip = draft.isEmpty ? nil : draft
+
+        noteLabel.isHidden = true
+        noteLabel.toolTip = nil
+        needsLayout = true
+    }
+
+    private func configureCommit(_ commit: Commit?, note: CommitDetailPresenter.NoteState) {
+        guard let commit else {
+            [subjectLabel, metaLabel, bodyLabel, noteLabel].forEach { $0.isHidden = true }
+            return
+        }
+        subjectLabel.isHidden = false
+        metaLabel.isHidden = false
+
+        if commit.subject.isEmpty {
+            subjectLabel.stringValue = "(no commit message)"
+            subjectLabel.textColor = .tertiaryLabelColor
+        } else {
+            subjectLabel.stringValue = commit.subject
+            subjectLabel.textColor = .labelColor
+        }
+
+        metaLabel.stringValue =
+            "\(commit.author.name) • \(RelativeDate.short(commit.authorDate)) • \(commit.sha.prefix(7))"
+        metaLabel.toolTip = RelativeDate.exact(commit.authorDate)
+
+        let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        bodyLabel.isHidden = body.isEmpty
+        bodyLabel.stringValue = body
+        bodyLabel.toolTip = body.isEmpty ? nil : body
+
+        // Only a loaded, non-empty note shows; loading and unavailable both stay hidden.
+        if case .loaded(let text) = note,
+           case let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmed.isEmpty {
+            noteLabel.isHidden = false
+            noteLabel.stringValue = "🗒 \(trimmed)"
+            noteLabel.toolTip = trimmed
+        } else {
+            noteLabel.isHidden = true
+            noteLabel.toolTip = nil
+        }
+
+        needsLayout = true
     }
 }

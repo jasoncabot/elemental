@@ -5,6 +5,7 @@ import Presenters
 @MainActor
 protocol TimelineViewControllerDelegate: AnyObject {
     func timelineViewController(_ vc: TimelineViewController, didSelectSHA sha: String?)
+    func timelineViewControllerDidSelectWorkingCopy(_ vc: TimelineViewController)
     func timelineViewControllerDidRequestRefresh(_ vc: TimelineViewController)
 }
 
@@ -23,9 +24,26 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         }
     }
 
+    /// The working copy of the active repo, surfaced as a pinned, selectable row above the commits.
+    /// Observed for live count/draft updates; nil when no repo is selected.
+    var workingCopyPresenter: WorkingCopyPresenter? {
+        didSet {
+            guard workingCopyPresenter !== oldValue else { return }
+            oldValue?.removeObserver(self)
+            workingCopyPresenter?.addObserver(self)
+            workingCopySelected = false
+            refreshWorkingCopyRow()
+        }
+    }
+
+    /// True while the user is reviewing the working copy rather than a commit.
+    private(set) var workingCopySelected = false
+
     private let tableView = TimelineTableView()
     private let scrollView = NSScrollView()
     private let dirtyBanner = DirtyBannerView()
+    private let workingCopyRow = WorkingCopyRowView()
+    private var workingCopyHeight: NSLayoutConstraint!
     private let emptyLabel = NSTextField(labelWithString: "Drop a repository folder here")
     private var isUpdatingSelection = false
     private var lastReportedSHA: String? = nil
@@ -69,6 +87,9 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         dirtyBanner.refreshButton.action = #selector(refreshTapped)
         dirtyBanner.isHidden = true
 
+        workingCopyRow.onSelect = { [weak self] in self?.selectWorkingCopy() }
+        workingCopyRow.isHidden = true
+
         emptyLabel.font = Theme.Font.secondary
         emptyLabel.textColor = .tertiaryLabelColor
         emptyLabel.alignment = .center
@@ -80,12 +101,15 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         container.state = .followsWindowActiveState
 
         dirtyBanner.translatesAutoresizingMaskIntoConstraints = false
+        workingCopyRow.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
         container.addSubview(dirtyBanner)
+        container.addSubview(workingCopyRow)
         container.addSubview(emptyLabel)
 
         bannerHeight = dirtyBanner.heightAnchor.constraint(equalToConstant: 0)
+        workingCopyHeight = workingCopyRow.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             dirtyBanner.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
@@ -93,7 +117,12 @@ final class TimelineViewController: NSViewController, PresenterObserving {
             dirtyBanner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             bannerHeight,
 
-            scrollView.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor),
+            workingCopyRow.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor),
+            workingCopyRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            workingCopyRow.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            workingCopyHeight,
+
+            scrollView.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -166,7 +195,59 @@ final class TimelineViewController: NSViewController, PresenterObserving {
 
     // MARK: - PresenterObserving
 
-    func presenterDidUpdate(_ presenter: AnyObject) { reloadFromPresenter() }
+    func presenterDidUpdate(_ presenter: AnyObject) {
+        if presenter === workingCopyPresenter { refreshWorkingCopyRow() }
+        else { reloadFromPresenter() }
+    }
+
+    // MARK: - Working-copy row
+
+    private func selectWorkingCopy() {
+        guard !workingCopyRow.isHidden else { return }
+        workingCopySelected = true
+        workingCopyRow.isSelected = true
+        // Clear the commit selection without reporting it (we're switching to the working copy).
+        isUpdatingSelection = true
+        tableView.deselectAll(nil)
+        isUpdatingSelection = false
+        lastReportedSHA = nil
+        delegate?.timelineViewControllerDidSelectWorkingCopy(self)
+    }
+
+    private func refreshWorkingCopyRow() {
+        guard let wc = workingCopyPresenter else {
+            workingCopyRow.isHidden = true
+            workingCopyHeight.constant = 0
+            if workingCopySelected {
+                workingCopySelected = false
+                workingCopyRow.isSelected = false
+                lastReportedSHA = nil
+                reloadFromPresenter()
+            }
+            return
+        }
+        // While status is reloading, leave the row exactly as it is — a transient nil status during
+        // a refresh must not evict the user from working-copy review mode.
+        guard !wc.isLoadingStatus else { return }
+        guard let status = wc.status, !status.isClean else {
+            workingCopyRow.isHidden = true
+            workingCopyHeight.constant = 0
+            // The working copy went clean while it was being reviewed — fall back to the commit.
+            if workingCopySelected {
+                workingCopySelected = false
+                workingCopyRow.isSelected = false
+                lastReportedSHA = nil
+                reloadFromPresenter()
+            }
+            return
+        }
+        workingCopyRow.isHidden = false
+        workingCopyHeight.constant = 64
+        workingCopyRow.configure(staged: status.staged.count, unstaged: status.unstaged.count,
+                                 untracked: status.untracked.count, conflicts: status.conflicts.count,
+                                 draft: wc.preparedMessage)
+        workingCopyRow.isSelected = workingCopySelected
+    }
 
     private func reloadFromPresenter() {
         let commits = presenter?.commits ?? []
@@ -199,6 +280,9 @@ final class TimelineViewController: NSViewController, PresenterObserving {
             renderedTotalCount = newTotal
             tableView.noteNumberOfRowsChanged()
         }
+
+        // While the working copy is being reviewed, leave the commit table unselected.
+        guard !workingCopySelected else { return }
 
         let currentSHA = presenter?.selectedSHA
         if let sha = currentSHA,
@@ -278,6 +362,11 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
         let baseOffset = presenter?.baseOffset ?? 0
         let idx = row - baseOffset
         let sha = (idx >= 0 && idx < commits.count) ? commits[idx].sha : nil
+        // Picking a commit ends working-copy review.
+        if workingCopySelected {
+            workingCopySelected = false
+            workingCopyRow.isSelected = false
+        }
         delegate?.timelineViewController(self, didSelectSHA: sha)
     }
 }
@@ -438,4 +527,104 @@ final class DirtyBannerView: NSView {
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
+}
+
+// MARK: - Working-copy row
+
+/// The pinned, selectable entry above the commit list representing the *current* working copy —
+/// the draft tip of the timeline. Shows staged/unstaged/untracked counts and any prepared commit
+/// message. Selecting it routes the detail panes to working-copy review.
+private final class WorkingCopyRowView: NSView {
+    var onSelect: (() -> Void)?
+    var isSelected = false { didSet { needsDisplay = true } }
+
+    private let icon = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "Uncommitted Changes")
+    private let metaLabel = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        icon.image = NSImage(systemSymbolName: "pencil.line", accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
+        icon.contentTintColor = .controlAccentColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.font = Theme.Font.subject()
+        titleLabel.textColor = .labelColor
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        metaLabel.font = Theme.Font.secondary
+        metaLabel.textColor = .secondaryLabelColor
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(icon); addSubview(titleLabel); addSubview(metaLabel)
+        // All horizontal constraints are .defaultHigh so the autoresizing-mask width==0
+        // constraint (applied by NSSplitView at startup) can win without log spam.
+        // Vertical anchors are required — they don't participate in the zero-width chain.
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16)
+                .id("wc-icon-leading").h(),
+            icon.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            icon.widthAnchor.constraint(equalToConstant: 16)
+                .id("wc-icon-width").h(),
+
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8)
+                .id("wc-title-leading").h(),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
+                .id("wc-title-trailing").h(),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+
+            metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor)
+                .id("wc-meta-leading").h(),
+            metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
+                .id("wc-meta-trailing").h(),
+            metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+        ])
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(staged: Int, unstaged: Int, untracked: Int, conflicts: Int, draft: String?) {
+        var parts: [String] = []
+        if staged > 0 { parts.append("\(staged) staged") }
+        if unstaged > 0 { parts.append("\(unstaged) unstaged") }
+        if untracked > 0 { parts.append("\(untracked) untracked") }
+        if conflicts > 0 { parts.append("\(conflicts) conflict\(conflicts == 1 ? "" : "s")") }
+        let counts = parts.isEmpty ? "No changes" : parts.joined(separator: " · ")
+
+        if let draft, case let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmed.isEmpty {
+            let subject = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
+            metaLabel.stringValue = "\(counts) — “\(subject)”"
+        } else {
+            metaLabel.stringValue = counts
+        }
+        toolTip = metaLabel.stringValue
+        setAccessibilityLabel("Uncommitted changes: \(metaLabel.stringValue)")
+    }
+
+    override func mouseDown(with event: NSEvent) { onSelect?() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard isSelected else { return }
+        let inset = bounds.insetBy(dx: 6, dy: 2)
+        let path = NSBezierPath(roundedRect: inset, xRadius: Theme.Metric.cornerRadius,
+                                yRadius: Theme.Metric.cornerRadius)
+        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).setFill()
+        path.fill()
+    }
+}
+
+// MARK: - NSLayoutConstraint helpers
+
+private extension NSLayoutConstraint {
+    /// Sets the identifier so constraint-conflict logs print a name instead of a raw address.
+    @discardableResult func id(_ s: String) -> NSLayoutConstraint { identifier = s; return self }
+    /// Drops priority to .defaultHigh so the zero-width autoresizing-mask constraint from
+    /// NSSplitView can win at startup without triggering unsatisfiable-constraint logs.
+    @discardableResult func h() -> NSLayoutConstraint { priority = .defaultHigh; return self }
 }

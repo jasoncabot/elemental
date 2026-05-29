@@ -1,9 +1,14 @@
 import Foundation
 import GitData
 
-/// Presents the working-copy status (staged / unstaged / untracked) and per-file diffs for one
-/// repository. Subscribes to `RepoWatcher` — on dirty event sets `isDirty` (no auto-reload);
-/// on user Refresh re-fetches status and any previously-loaded diff.
+/// Presents the working copy as the three trees git actually tracks — **staged** (index vs HEAD),
+/// **unstaged** (worktree vs index), and **untracked** — kept as distinct, first-class views rather
+/// than collapsed into one "changes" blob. The staged/unstaged diffs are loaded eagerly so the
+/// files pane can show both side by side (a file edited in both appears in both); untracked file
+/// contents load lazily on selection. Read-only: it reflects staging the user performs elsewhere.
+///
+/// Subscribes to `RepoWatcher` — on a dirty event it sets `isDirty` (no auto-reload); the user's
+/// Refresh re-fetches everything.
 @MainActor
 public final class WorkingCopyPresenter: Presenter {
 
@@ -11,22 +16,71 @@ public final class WorkingCopyPresenter: Presenter {
     private let watcher: RepoWatcher
     private let repo: Repository
 
-    public private(set) var status: WorkingCopyStatus?
+    /// The selected file's path within its area. A path can exist in two areas (staged *and*
+    /// unstaged), so selection is meaningful only together with `selectedArea`.
     public private(set) var selectedFile: FileStatus.ID?
-    /// Which area the selected file lives in (staged vs unstaged).
+    /// Which area the selected file lives in: `.workingStaged`, `.workingUnstaged`, or
+    /// `.workingUntracked(path)`.
     public private(set) var selectedArea: DiffRange?
-    /// The diff for the currently-selected file.
-    public private(set) var diff: [DiffFile] = []
     public private(set) var isDirty = false
-    public private(set) var isLoadingStatus = false
-    public private(set) var isLoadingDiff = false
-    public private(set) var lastStatusError: Error?
-    public private(set) var lastDiffError: Error?
 
-    private var statusTask:   Task<Void, Never>?
-    private var diffTask:     Task<Void, Never>?
-    private var watchTask:    Task<Void, Never>?
-    private var diffGeneration: Int = 0
+    /// Single source of truth for the working-copy status (file lists + branch + ahead/behind).
+    public private(set) var statusState: Loadable<WorkingCopyStatus> = .idle
+    /// Staged diff (`git diff --cached`), loaded eagerly. Drives the "Staged" section + its diffs.
+    public private(set) var stagedState: Loadable<[DiffFile]> = .idle
+    /// Unstaged diff (`git diff`), loaded eagerly. Drives the "Unstaged" section + its diffs.
+    public private(set) var unstagedState: Loadable<[DiffFile]> = .idle
+    /// The currently-selected untracked file's contents, loaded lazily (all-additions diff).
+    public private(set) var untrackedState: Loadable<[DiffFile]> = .idle
+    /// git's prepared commit message (MERGE_MSG/SQUASH_MSG/COMMIT_EDITMSG), if any. The "why"
+    /// floor for uncommitted work — there is no SHA to hang a git note on yet.
+    public private(set) var preparedMessage: String?
+    /// Inline vs side-by-side rendering for the diff pane. Shared shape with `CommitDetailPresenter`
+    /// so a single header toggle drives whichever detail source is active.
+    public var mode: CommitDetailPresenter.Mode = .unified
+
+    public var status: WorkingCopyStatus? { statusState.value }
+    public var stagedFiles: [DiffFile] { stagedState.value ?? [] }
+    public var unstagedFiles: [DiffFile] { unstagedState.value ?? [] }
+    public var isLoadingStatus: Bool { statusState.isLoading }
+    public var lastStatusError: Error? { statusState.error }
+
+    /// All files in the currently-selected area (the diff pane picks `selectedDiffFile` from these).
+    public var diff: [DiffFile] {
+        switch selectedArea {
+        case .workingStaged:    return stagedFiles
+        case .workingUnstaged:  return unstagedFiles
+        case .workingUntracked: return untrackedState.value ?? []
+        default:                return []
+        }
+    }
+    public var isLoadingDiff: Bool {
+        switch selectedArea {
+        case .workingStaged:    return stagedState.isLoading
+        case .workingUnstaged:  return unstagedState.isLoading
+        case .workingUntracked: return untrackedState.isLoading
+        default:                return false
+        }
+    }
+    public var lastDiffError: Error? {
+        switch selectedArea {
+        case .workingStaged:    return stagedState.error
+        case .workingUnstaged:  return unstagedState.error
+        case .workingUntracked: return untrackedState.error
+        default:                return nil
+        }
+    }
+    /// The single `DiffFile` to render for the current selection, resolved by path within its area.
+    public var selectedDiffFile: DiffFile? {
+        guard let id = selectedFile else { return nil }
+        return diff.first { $0.displayPath == id }
+    }
+
+    private var statusTask:    Task<Void, Never>?
+    private var stagedTask:    Task<Void, Never>?
+    private var unstagedTask:  Task<Void, Never>?
+    private var untrackedTask: Task<Void, Never>?
+    private var watchTask:     Task<Void, Never>?
 
     public init(backend: GitBackend, watcher: RepoWatcher, repo: Repository) {
         self.backend = backend
@@ -39,29 +93,48 @@ public final class WorkingCopyPresenter: Presenter {
 
     public func start() {
         observeDiskChanges()
-        loadStatus()
+        reloadAll()
     }
 
-    /// Select a file in a specific area (`.workingStaged` or `.workingUnstaged`) and load its diff.
+    /// Switch inline ↔ side-by-side. No reload needed; the view re-renders the same diff.
+    public func setMode(_ mode: CommitDetailPresenter.Mode) {
+        guard mode != self.mode else { return }
+        self.mode = mode
+        notify()
+    }
+
+    /// Select a file in a specific area. Staged/unstaged diffs are already loaded eagerly; only an
+    /// untracked file triggers a load (its contents aren't part of any tree diff).
     public func selectFile(id: FileStatus.ID?, area: DiffRange?) {
         selectedFile = id
         selectedArea = area
-        diff = []
+        untrackedState = .idle
+        untrackedTask?.cancel()
         guard id != nil, let area else { notify(); return }
-        loadDiff(range: area)
+        if case .workingUntracked(let path) = area {
+            loadUntracked(path: path)
+        } else {
+            notify()
+        }
     }
 
     /// Called by the view when the user clicks the Refresh affordance.
     public func refresh() {
         isDirty = false
-        loadStatus()
-        // Re-load diff if a file was selected.
-        if let area = selectedArea {
-            loadDiff(range: area)
+        reloadAll()
+        if case .workingUntracked(let path)? = selectedArea {
+            loadUntracked(path: path)
         }
     }
 
     // MARK: – Private helpers
+
+    private func reloadAll() {
+        loadStatus()
+        loadStaged()
+        loadUnstaged()
+        loadPreparedMessage()
+    }
 
     private func observeDiskChanges() {
         watchTask = Task { [weak self, watcher, repo] in
@@ -76,8 +149,7 @@ public final class WorkingCopyPresenter: Presenter {
 
     private func loadStatus() {
         statusTask?.cancel()
-        isLoadingStatus = true
-        lastStatusError = nil
+        statusState = .loading
         notify()
 
         statusTask = Task { [weak self, backend, repo] in
@@ -85,45 +157,76 @@ public final class WorkingCopyPresenter: Presenter {
             do {
                 let result = try await backend.workingCopyStatus(for: repo)
                 if Task.isCancelled { return }
-                self.status = result
-                self.isLoadingStatus = false
+                self.statusState = .loaded(result)
                 // If the selected file no longer appears in the new status, clear it.
                 self.reconcileSelection(with: result)
             } catch is CancellationError {
                 return
             } catch {
-                self.isLoadingStatus = false
-                self.lastStatusError = error
+                self.statusState = .failed(error)
             }
             self.notify()
         }
     }
 
-    private func loadDiff(range: DiffRange) {
-        diffTask?.cancel()
-        diffGeneration &+= 1
-        let generation = diffGeneration
-        isLoadingDiff = true
-        lastDiffError = nil
-        diff = []
+    private func loadStaged() {
+        stagedTask?.cancel()
+        stagedState = .loading
         notify()
-
-        diffTask = Task { [weak self, backend, repo] in
+        stagedTask = Task { [weak self, backend, repo] in
             guard let self else { return }
             do {
-                let result = try await backend.diff(range, in: repo)
+                let result = try await backend.diff(.workingStaged, in: repo)
                 if Task.isCancelled { return }
-                // Only apply if a newer diff request hasn't superseded this one.
-                guard self.diffGeneration == generation else { return }
-                self.diff = result
-                self.isLoadingDiff = false
-            } catch is CancellationError {
-                return
-            } catch {
-                guard self.diffGeneration == generation else { return }
-                self.isLoadingDiff = false
-                self.lastDiffError = error
+                self.stagedState = .loaded(result)
+            } catch is CancellationError { return }
+            catch { self.stagedState = .failed(error) }
+            self.notify()
+        }
+    }
+
+    private func loadUnstaged() {
+        unstagedTask?.cancel()
+        unstagedState = .loading
+        notify()
+        unstagedTask = Task { [weak self, backend, repo] in
+            guard let self else { return }
+            do {
+                let result = try await backend.diff(.workingUnstaged, in: repo)
+                if Task.isCancelled { return }
+                self.unstagedState = .loaded(result)
+            } catch is CancellationError { return }
+            catch { self.unstagedState = .failed(error) }
+            self.notify()
+        }
+    }
+
+    private func loadUntracked(path: String) {
+        untrackedTask?.cancel()
+        untrackedState = .loading
+        notify()
+        untrackedTask = Task { [weak self, backend, repo] in
+            guard let self else { return }
+            do {
+                let result = try await backend.diff(.workingUntracked(path), in: repo)
+                if Task.isCancelled { return }
+                // Ignore a stale load if the selection moved on while this was in flight.
+                guard case .workingUntracked(path)? = self.selectedArea else { return }
+                self.untrackedState = .loaded(result)
+            } catch is CancellationError { return }
+            catch {
+                guard case .workingUntracked(path)? = self.selectedArea else { return }
+                self.untrackedState = .failed(error)
             }
+            self.notify()
+        }
+    }
+
+    private func loadPreparedMessage() {
+        Task { [weak self, backend, repo] in
+            let message = try? await backend.preparedCommitMessage(for: repo)
+            guard let self else { return }
+            self.preparedMessage = message ?? nil
             self.notify()
         }
     }
@@ -134,13 +237,15 @@ public final class WorkingCopyPresenter: Presenter {
         if !allFiles.contains(where: { $0.id == id }) {
             selectedFile = nil
             selectedArea = nil
-            diff = []
+            untrackedState = .idle
         }
     }
 
     deinit {
         statusTask?.cancel()
-        diffTask?.cancel()
+        stagedTask?.cancel()
+        unstagedTask?.cancel()
+        untrackedTask?.cancel()
         watchTask?.cancel()
     }
 }

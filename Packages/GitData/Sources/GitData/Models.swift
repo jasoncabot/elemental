@@ -143,16 +143,28 @@ public enum DiffLineKind: Hashable, Sendable {
     case context, added, removed
 }
 
+/// Structural classification of a *changed* line, produced by `DiffAnnotator` (heuristic, offline).
+/// Lets the UI de-emphasise churn so substantive edits stand out. `.context` lines are always
+/// `.substantive` — this only describes added/removed lines.
+public enum DiffLineChange: Hashable, Sendable {
+    case substantive   // a genuine content change (the default)
+    case whitespace    // differs from its counterpart only in whitespace (reindent, trailing space)
+    case moved         // this exact line appears on the opposite side elsewhere in the diff
+}
+
 public struct DiffLine: Hashable, Sendable {
     public var kind: DiffLineKind
     public var oldLineNumber: Int?
     public var newLineNumber: Int?
     public var text: String
-    public init(kind: DiffLineKind, oldLineNumber: Int?, newLineNumber: Int?, text: String) {
+    public var change: DiffLineChange
+    public init(kind: DiffLineKind, oldLineNumber: Int?, newLineNumber: Int?, text: String,
+                change: DiffLineChange = .substantive) {
         self.kind = kind
         self.oldLineNumber = oldLineNumber
         self.newLineNumber = newLineNumber
         self.text = text
+        self.change = change
     }
 }
 
@@ -161,15 +173,21 @@ public struct DiffHunk: Hashable, Sendable {
     public var oldCount: Int
     public var newStart: Int
     public var newCount: Int
+    /// The raw `@@ -a,b +c,d @@ …` header line, verbatim.
     public var header: String
+    /// The enclosing function/section git reports after the second `@@` (its xfuncname), cleaned
+    /// up — e.g. `func handleLogin() {`. `nil` when git emits none (unsupported language, top of
+    /// file). This is the free "which function changed?" rung.
+    public var context: String?
     public var lines: [DiffLine]
     public init(oldStart: Int, oldCount: Int, newStart: Int, newCount: Int,
-                header: String, lines: [DiffLine]) {
+                header: String, lines: [DiffLine], context: String? = nil) {
         self.oldStart = oldStart
         self.oldCount = oldCount
         self.newStart = newStart
         self.newCount = newCount
         self.header = header
+        self.context = context
         self.lines = lines
     }
 }

@@ -28,6 +28,9 @@ public struct CommitQuery: Sendable {
 public enum DiffRange: Sendable {
     case workingUnstaged
     case workingStaged
+    /// An untracked file's full contents, rendered as an all-additions diff against nothing.
+    /// Untracked files don't appear in `diff-files`, so they're surfaced explicitly by path.
+    case workingUntracked(String)
     case commit(String)
     case between(String, String)
 }
@@ -50,4 +53,18 @@ public protocol GitBackend: Sendable {
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile]
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus
     func blob(at path: String, rev: String, in repo: Repository) async throws -> Data
+    /// The git note attached to a commit (`refs/notes/commits`), or nil if it has none.
+    func note(for sha: String, in repo: Repository) async throws -> String?
+    /// A commit message git has genuinely prepared for an in-progress operation — read from
+    /// `MERGE_MSG`/`SQUASH_MSG` in the git dir (merge/squash/cherry-pick). `nil` when none exists.
+    /// Read-only; never written. (`COMMIT_EDITMSG` is intentionally not used — it lingers after
+    /// every commit and would surface a stale message.)
+    func preparedCommitMessage(for repo: Repository) async throws -> String?
+}
+
+public extension GitBackend {
+    /// Default for backends without note support (e.g. test fakes): no note.
+    func note(for sha: String, in repo: Repository) async throws -> String? { nil }
+    /// Default for backends without working-copy message support (e.g. test fakes): none.
+    func preparedCommitMessage(for repo: Repository) async throws -> String? { nil }
 }

@@ -10,13 +10,43 @@ enum LogFormat {
     ].joined(separator: unit) + record
 }
 
+/// Builds the commit-walk invocation. `git log` is porcelain; `git rev-list` is its plumbing
+/// equivalent, and is what we use so output never depends on `log.*` config, aliases, or pager.
+///
+/// `rev-list --format` prints a `commit <sha>` header line before each record. We deliberately
+/// do *not* pass `--no-commit-header` (git ≥ 2.33 only) — instead `CommitParser` strips that
+/// header, so every git version is supported with identical parsing.
+enum CommitLog {
+    static func revListArgs(for query: CommitQuery) -> [String] {
+        // `rev-list` requires an explicit starting point — unlike `git log`, it has no implicit HEAD.
+        var args = ["rev-list", "--parents", "--format=\(LogFormat.pretty)"]
+        switch query.scope {
+        case .head:          args.append("HEAD")
+        case .branch(let b): args.append(b)
+        case .ref(let r):    args.append(r)
+        case .all:           args.append("--all")
+        }
+        if let maxCount = query.maxCount { args.append("--max-count=\(maxCount)") }
+        if let skip = query.skip { args.append("--skip=\(skip)") }
+        if let since = query.since {
+            args.append("--since=\(ISO8601DateFormatter.gitISO.string(from: since))")
+        }
+        return args
+    }
+}
+
 enum CommitParser {
     static func parse(_ data: Data, calendar: ISO8601DateFormatter = .gitISO) -> [Commit] {
         let text = String(decoding: data, as: UTF8.self)
         var commits: [Commit] = []
         for record in text.components(separatedBy: LogFormat.record) {
-            let trimmed = record.trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+            var trimmed = record.trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
             if trimmed.isEmpty { continue }
+            // `git rev-list --format` prefixes each record with a `commit <sha>` line. Drop it so
+            // field[0] is the `%H` we asked for. A no-op when the header is absent (%H is hex).
+            if trimmed.hasPrefix("commit "), let newline = trimmed.firstIndex(of: "\n") {
+                trimmed = String(trimmed[trimmed.index(after: newline)...])
+            }
             let fields = trimmed.components(separatedBy: LogFormat.unit)
             guard fields.count >= 11 else { continue }
             let parents = fields[1].split(separator: " ").map(String.init)

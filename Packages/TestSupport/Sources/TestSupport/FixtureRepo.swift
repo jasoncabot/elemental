@@ -1,5 +1,10 @@
 import Foundation
 
+/// Errors raised by fixture operations that must not fail silently.
+public enum FixtureError: Error {
+    case commandFailed(String)
+}
+
 /// Builds disposable git repositories on disk for tests. Shells out to the real git binary so
 /// tests exercise the same "user's own git" path the app uses. Other layers consume these
 /// fixtures rather than inventing their own.
@@ -80,6 +85,11 @@ public final class FixtureRepo {
 
     public func tag(_ name: String) throws {
         try run(["tag", name])
+    }
+
+    /// Attach a git note to a commit (refs/notes/commits).
+    public func addNote(_ message: String, to ref: String = "HEAD") throws {
+        try run(["notes", "add", "-m", message, ref])
     }
 
     public func revParse(_ ref: String) throws -> String {
@@ -205,7 +215,16 @@ public final class FixtureRepo {
 
     /// Add a submodule from another FixtureRepo. `subPath` is the in-repo path.
     public func addSubmodule(_ sub: FixtureRepo, at subPath: String) throws {
-        try run(["submodule", "add", "-q", sub.url.path, subPath])
+        // Cloning a submodule over a local `file` path is blocked by `protocol.file.allow`'s
+        // default ("user") since CVE-2022-39253, so it must be explicitly allowed here.
+        // Verify success: `run` does not throw on a non-zero exit, and a silently failed
+        // submodule add leaves the repo with *no* submodule — a landmine for the tests that
+        // depend on it.
+        let code = try run(["-c", "protocol.file.allow=always",
+                            "submodule", "add", "-q", sub.url.path, subPath])
+        guard code == 0 else {
+            throw FixtureError.commandFailed("git submodule add exited \(code)")
+        }
     }
 
     // MARK: - Raw git

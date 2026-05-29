@@ -56,6 +56,11 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         branchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         branchLabel.maximumNumberOfLines = 1
         branchLabel.preferredMaxLayoutWidth = 200
+        // Size the toolbar item via a constraint (NSToolbarItem.min/maxSize are deprecated and
+        // clip). A bare upper bound lets the label shrink to nothing when there's no branch and
+        // cap+truncate at 200 when names are long.
+        branchLabel.translatesAutoresizingMaskIntoConstraints = false
+        branchLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
 
         modeControl.target = self
         modeControl.action = #selector(modeChanged)
@@ -131,8 +136,6 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: id)
             item.view = branchLabel
             item.label = "Branch"
-            item.minSize = NSSize(width: 40, height: 22)
-            item.maxSize = NSSize(width: 200, height: 22)
             return item
         case ItemID.mode:
             let item = NSToolbarItem(itemIdentifier: id)

@@ -7,15 +7,30 @@ import GitData
 public final class CommitDetailPresenter: Presenter {
     public enum Mode: Sendable { case unified, sideBySide }
 
+    /// Loading state of a commit's git note. Distinguishes "still fetching" from "no note exists"
+    /// — a plain `String?` collapses those into the same `nil`.
+    public enum NoteState: Sendable, Equatable {
+        case loading           // fetch in flight; result not yet known
+        case loaded(String)    // the commit has a note
+        case unavailable       // fetch finished: the commit has no note (or it couldn't be read)
+    }
+
     private let backend: GitBackend
     private let repo: Repository
 
     public private(set) var sha: String?
-    public private(set) var files: [DiffFile] = []
+    /// The commit being reviewed — its message is the "why" behind the diff.
+    public private(set) var commit: Commit?
+    /// The commit's git note (refs/notes/commits), fetched on demand.
+    public private(set) var commitNote: NoteState = .unavailable
+    /// Load state of the commit's diff — the single source of truth for files/loading/error.
+    public private(set) var filesState: Loadable<[DiffFile]> = .idle
     public private(set) var selectedFile: DiffFile.ID?
-    public private(set) var isLoading = false
-    public private(set) var lastError: Error?
-    public var mode: Mode = .unified
+    public private(set) var mode: Mode = .unified
+
+    public var files: [DiffFile] { filesState.value ?? [] }
+    public var isLoading: Bool { filesState.isLoading }
+    public var lastError: Error? { filesState.error }
 
     private var cache: [String: [DiffFile]] = [:]
     private var loadTask: Task<Void, Never>?
@@ -30,9 +45,15 @@ public final class CommitDetailPresenter: Presenter {
         let sha = commit?.sha
         guard sha != self.sha else { return }
         self.sha = sha
-        guard let commit else { files = []; selectedFile = nil; notify(); return }
+        self.commit = commit
+        guard let commit else {
+            commitNote = .unavailable
+            filesState = .idle; selectedFile = nil; notify(); return
+        }
+        commitNote = .loading
+        fetchNote(for: commit.sha)
         if let cached = cache[commit.sha] {
-            files = cached
+            filesState = .loaded(cached)
             selectedFile = cached.first?.id
             notify()
             return
@@ -40,8 +61,25 @@ public final class CommitDetailPresenter: Presenter {
         load(commit)
     }
 
+    /// Loads the commit's git note in the background; the message panel updates if/when it arrives.
+    private func fetchNote(for sha: String) {
+        Task { [weak self, backend, repo, sha] in
+            let note = (try? await backend.note(for: sha, in: repo)) ?? nil
+            guard let self, self.sha == sha else { return }
+            self.commitNote = note.map(NoteState.loaded) ?? .unavailable
+            self.notify()
+        }
+    }
+
     public func selectFile(_ id: DiffFile.ID?) {
         selectedFile = id
+        notify()
+    }
+
+    /// Switch inline ↔ side-by-side. No reload needed; the view re-renders the same diff.
+    public func setMode(_ mode: Mode) {
+        guard mode != self.mode else { return }
+        self.mode = mode
         notify()
     }
 
@@ -54,8 +92,7 @@ public final class CommitDetailPresenter: Presenter {
             : .commit(sha)
 
         loadTask?.cancel()
-        isLoading = true
-        lastError = nil
+        filesState = .loading
         notify()
         loadTask = Task { [weak self, backend, repo, sha, range] in
             guard let self else { return }
@@ -64,16 +101,14 @@ public final class CommitDetailPresenter: Presenter {
                 if Task.isCancelled { return }
                 self.cache[sha] = result
                 guard self.sha == sha else { return }
-                self.files = result
+                self.filesState = .loaded(result)
                 self.selectedFile = result.first?.id
-                self.isLoading = false
                 self.notify()
             } catch is CancellationError {
                 return
             } catch {
                 guard self.sha == sha else { return }
-                self.isLoading = false
-                self.lastError = error
+                self.filesState = .failed(error)
                 self.notify()
             }
         }

@@ -1,5 +1,7 @@
 import Foundation
 
+// MARK: - Cross-platform types
+
 /// Emitted when something under a repository's git dir changes on disk.
 public struct DirtyEvent: Sendable {
     public var repo: Repository
@@ -14,6 +16,11 @@ public struct DirtyEvent: Sendable {
 public protocol RepoWatcher: Sendable {
     func events(for repo: Repository) -> AsyncStream<DirtyEvent>
 }
+
+// MARK: - macOS FSEvents implementation
+
+#if canImport(CoreServices)
+import CoreServices
 
 /// FSEvents-backed watcher over a repository's common git dir. Debounces bursts.
 public final class FSEventsRepoWatcher: RepoWatcher, @unchecked Sendable {
@@ -90,14 +97,13 @@ private final class FSEventStreamSession {
             guard let info else { return }
             let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
             guard let session = box.session else { return }
+            // kFSEventStreamCreateFlagUseCFTypes makes eventPaths a CFArray of CFString;
+            // without it eventPaths is char** and the Unmanaged<CFArray> cast is undefined behaviour.
             let cfPaths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue()
-            var paths: [String] = []
-            for i in 0..<count {
-                if let p = (cfPaths as? [String])?[i] { paths.append(p) }
-            }
+            let paths = (cfPaths as? [String]) ?? []
             session.enqueue(paths)
         }
-        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+        let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagUseCFTypes)
         guard let ref = FSEventStreamCreate(
             kCFAllocatorDefault, callback, &context,
             [path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
@@ -149,3 +155,4 @@ private final class FSEventStreamSession {
         }
     }
 }
+#endif // canImport(CoreServices)

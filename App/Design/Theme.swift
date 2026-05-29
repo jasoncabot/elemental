@@ -74,9 +74,15 @@ enum Theme {
             case .added:   return .systemGreen
             case .deleted: return .systemRed
             case .renamed, .copied: return .systemPurple
-            case .modified, .typeChanged: return .systemBlue
+            case .modified, .typeChanged: return .systemOrange
             case .other:   return .secondaryLabelColor
             }
+        }
+
+        /// A calm, typography-friendly status tint for filename text — the status color blended
+        /// toward the label color so a list of modified files reads as text, not a warning.
+        static func statusText(_ status: DiffStatusKind) -> NSColor {
+            blend(statusColor(status), into: .labelColor, amount: 0.55)
         }
 
         private static func blend(_ a: NSColor, into b: NSColor, amount: CGFloat) -> NSColor {

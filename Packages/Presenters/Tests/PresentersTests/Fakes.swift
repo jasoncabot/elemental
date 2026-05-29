@@ -16,8 +16,10 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     var diffsBySHA: [String: [DiffFile]] = [:]
     var stagedDiffs:   [DiffFile] = []
     var unstagedDiffs: [DiffFile] = []
+    var untrackedDiffs: [String: [DiffFile]] = [:]
     var stubbedRefs: RefSnapshot?
     var stubbedStatus: WorkingCopyStatus?
+    var stubbedPreparedMessage: String?
 
     private var _diffCallCount = 0
     private(set) var diffCallCount: Int {
@@ -64,6 +66,7 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
         case .commit(let sha):     return diffsBySHA[sha] ?? []
         case .workingStaged:       return stagedDiffs
         case .workingUnstaged:     return unstagedDiffs
+        case .workingUntracked(let path): return untrackedDiffs[path] ?? []
         case .between:             return []
         }
     }
@@ -75,6 +78,8 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func blob(at path: String, rev: String, in repo: Repository) async throws -> Data { Data() }
+
+    func preparedCommitMessage(for repo: Repository) async throws -> String? { stubbedPreparedMessage }
 }
 
 /// Controllable RepoWatcher: tests push DirtyEvents on demand.
