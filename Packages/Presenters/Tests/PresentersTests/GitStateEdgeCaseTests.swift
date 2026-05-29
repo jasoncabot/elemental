@@ -30,19 +30,18 @@ final class GitStateEdgeCaseTests: XCTestCase {
 
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         presenter.select("bbb")
         XCTAssertEqual(presenter.selectedSHA, "bbb")
 
         // Simulate branch switch: dirty event fires
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD", "refs/heads/feature"]))
-        try await Task.sleep(for: .milliseconds(60))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         // User refreshes — commits still contain "bbb" so selection stays
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading && !presenter.isDirty }
         XCTAssertEqual(presenter.selectedSHA, "bbb")
         XCTAssertFalse(presenter.isDirty)
     }
@@ -56,17 +55,17 @@ final class GitStateEdgeCaseTests: XCTestCase {
 
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         presenter.select("bbb")
 
         // Branch switch: new branch doesn't have "bbb"
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         backend.commitsByScopeAll = [makeCommit("xxx"), makeCommit("yyy")]
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         XCTAssertEqual(presenter.selectedSHA, "xxx", "Should fall back to tip when selected SHA is gone")
     }
@@ -82,7 +81,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         )
         let presenter = SidebarPresenter(backend: backend, watcher: FakeWatcher())
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.refs != nil }
 
         let item = try XCTUnwrap(presenter.items.first)
         if case .detached(let sha) = item.refs?.head {
@@ -105,7 +104,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         XCTAssertTrue(presenter.commits.isEmpty)
         XCTAssertNil(presenter.selectedSHA)
@@ -120,7 +119,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         )
         let presenter = SidebarPresenter(backend: backend, watcher: FakeWatcher())
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.refs != nil }
 
         let item = try XCTUnwrap(presenter.items.first)
         if case .unborn(let branch) = item.refs?.head {
@@ -139,7 +138,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("a1")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         // Fire dirty events typical of a rebase
         let rebasePaths = [
@@ -151,7 +150,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         for path in rebasePaths {
             watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: [path]))
         }
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty)
         // No crash, commits still accessible
@@ -176,7 +175,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = WorkingCopyPresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.status != nil && !presenter.isLoadingStatus }
 
         XCTAssertEqual(presenter.status?.conflicts.count, 2)
     }
@@ -190,14 +189,14 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("b1"), makeCommit("b2")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         // Bisect causes many HEAD moves
         for i in 0..<10 {
             watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD", "BISECT_LOG"]))
             _ = i
         }
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty)
         // Backend only called once (initial load), not 10 more times
@@ -213,10 +212,10 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("s1")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["refs/stash"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
         XCTAssertTrue(presenter.isDirty)
     }
 
@@ -234,12 +233,11 @@ final class GitStateEdgeCaseTests: XCTestCase {
         )
         let presenter = SidebarPresenter(backend: backend, watcher: watcher)
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.refs != nil }
 
         // Simulate fetch that updates remote refs
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["refs/remotes/origin/main"]))
-        try await Task.sleep(for: .milliseconds(60))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         // Update backend stub and refresh
         backend.stubbedRefs = RefSnapshot(
@@ -249,7 +247,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
             tags: []
         )
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false && !presenter.isDirty }
 
         let item = try XCTUnwrap(presenter.items.first)
         XCTAssertEqual(item.remotes.first?.sha, "new-remote")
@@ -265,11 +263,11 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("d1")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         // Even after dirty events for a deleted repo, presenter stays stable
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: [".git"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty)
         // Commits still in memory — no crash
@@ -289,10 +287,10 @@ final class GitStateEdgeCaseTests: XCTestCase {
         )
         let presenter = SidebarPresenter(backend: backend, watcher: watcher)
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.refs != nil }
 
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["worktrees/"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty)
         // Refs remain valid
@@ -308,7 +306,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         failingBackend.allCommits = [makeCommit("g1"), makeCommit("g2"), makeCommit("g3")]
         let presenter = TimelinePresenter(backend: failingBackend, watcher: FakeWatcher(), repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(100))
+        await awaitCondition(on: presenter) { presenter.lastError != nil }
 
         // Should have the error recorded, not crash
         XCTAssertNotNil(presenter.lastError)
@@ -321,7 +319,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let lockBackend = ErroringRefsBackend()
         let presenter = SidebarPresenter(backend: lockBackend, watcher: FakeWatcher())
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false }
 
         let item = try XCTUnwrap(presenter.items.first)
         XCTAssertNotNil(item.refError, "Lock contention error should be surfaced")
@@ -337,13 +335,13 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("r1"), makeCommit("r2")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         // Rapid switches — 5 HEAD changes in quick succession
         for _ in 0..<5 {
             watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD"]))
         }
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty)
         XCTAssertEqual(backend.loadCallCount, 1, "No auto-reload on dirty events")
@@ -351,7 +349,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         // After user refresh, backend is called exactly once more
         backend.commitsByScopeAll = [makeCommit("final1"), makeCommit("final2")]
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         XCTAssertEqual(presenter.commits.first?.sha, "final1")
         XCTAssertEqual(backend.loadCallCount, 2)
@@ -367,7 +365,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(),
                                           repo: makeRepo(), pageSize: 100)
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         XCTAssertEqual(presenter.commits.count, 2)
         XCTAssertFalse(presenter.hasMoreCommits, "Should detect end of available commits")
@@ -380,7 +378,7 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let corruptBackend = ErroringRefsBackend()
         let presenter = SidebarPresenter(backend: corruptBackend, watcher: FakeWatcher())
         presenter.setRepositories([makeRepo()])
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false }
 
         let item = try XCTUnwrap(presenter.items.first)
         XCTAssertNotNil(item.refError)
@@ -397,12 +395,12 @@ final class GitStateEdgeCaseTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("c1"), makeCommit("c2")]
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: makeRepo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         // Dirty event + immediate refresh (user is fast)
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD"]))
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         XCTAssertFalse(presenter.isDirty)
         XCTAssertEqual(presenter.commits.count, 2)
@@ -417,15 +415,15 @@ final class GitStateEdgeCaseTests: XCTestCase {
         var presenter: TimelinePresenter? = TimelinePresenter(
             backend: backend, watcher: watcher, repo: makeRepo())
         presenter?.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter!) { !presenter!.isLoading }
 
         // Deallocate presenter
         presenter = nil
-        try await Task.sleep(for: .milliseconds(20))
+        await yieldToMainActor()
 
         // Fire events after dealloc — must not crash
         watcher.fire(DirtyEvent(repo: makeRepo(), changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await yieldToMainActor()
         // If we reach here, no crash occurred ✓
     }
 
@@ -442,11 +440,12 @@ final class GitStateEdgeCaseTests: XCTestCase {
         let presenterB = TimelinePresenter(backend: backend, watcher: watcher, repo: repoB)
         presenterA.start()
         presenterB.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenterA) { !presenterA.isLoading }
+        await awaitCondition(on: presenterB) { !presenterB.isLoading }
 
         // Only fire for repoA
         watcher.fire(DirtyEvent(repo: repoA, changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenterA) { presenterA.isDirty }
 
         // FakeWatcher broadcasts to all subscribers; in production each watcher.events(for:)
         // filters by repo. This test documents that the presenter handles events gracefully.

@@ -32,7 +32,7 @@ final class WorkingCopyPresenterTests: XCTestCase {
         )
         let presenter = WorkingCopyPresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.status != nil && !presenter.isLoadingStatus }
 
         XCTAssertNotNil(presenter.status)
         XCTAssertEqual(presenter.status?.staged.count, 1)
@@ -47,10 +47,10 @@ final class WorkingCopyPresenterTests: XCTestCase {
         backend.stagedDiffs = [makeDiffFile("staged.swift")]
         let presenter = WorkingCopyPresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { !presenter.isLoadingStatus }
 
         presenter.selectFile(id: "staged.swift", area: .workingStaged)
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoadingDiff }
 
         XCTAssertEqual(presenter.diff.count, 1)
         XCTAssertEqual(presenter.diff.first?.displayPath, "staged.swift")
@@ -63,10 +63,10 @@ final class WorkingCopyPresenterTests: XCTestCase {
         backend.unstagedDiffs = [makeDiffFile("unstaged.swift")]
         let presenter = WorkingCopyPresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { !presenter.isLoadingStatus }
 
         presenter.selectFile(id: "unstaged.swift", area: .workingUnstaged)
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoadingDiff }
 
         XCTAssertEqual(presenter.diff.count, 1)
         XCTAssertEqual(presenter.diff.first?.displayPath, "unstaged.swift")
@@ -78,10 +78,9 @@ final class WorkingCopyPresenterTests: XCTestCase {
         backend.stagedDiffs = [makeDiffFile("a.swift")]
         let presenter = WorkingCopyPresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { !presenter.isLoadingStatus }
         presenter.selectFile(id: "a.swift", area: .workingStaged)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(presenter.diff.isEmpty)
+        await awaitCondition(on: presenter) { !presenter.isLoadingDiff && !presenter.diff.isEmpty }
 
         presenter.selectFile(id: nil, area: nil)
         XCTAssertTrue(presenter.diff.isEmpty)
@@ -100,7 +99,7 @@ final class WorkingCopyPresenterTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = WorkingCopyPresenter(backend: backend, watcher: watcher, repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.status != nil && !presenter.isLoadingStatus }
         XCTAssertFalse(presenter.isDirty)
 
         // Change what the backend would return (but should NOT be fetched yet).
@@ -109,9 +108,8 @@ final class WorkingCopyPresenterTests: XCTestCase {
             staged: [], unstaged: [], untracked: [], conflicts: []
         )
         watcher.fire(DirtyEvent(repo: repo(), changedPaths: [".git/index"]))
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
-        XCTAssertTrue(presenter.isDirty)
         // Status not reloaded — still shows the original staged file.
         XCTAssertEqual(presenter.status?.staged.count, 1)
     }
@@ -126,11 +124,10 @@ final class WorkingCopyPresenterTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = WorkingCopyPresenter(backend: backend, watcher: watcher, repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.status != nil && !presenter.isLoadingStatus }
 
         watcher.fire(DirtyEvent(repo: repo(), changedPaths: [".git/index"]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         // After squash: staged file is gone.
         backend.stubbedStatus = WorkingCopyStatus(
@@ -138,7 +135,7 @@ final class WorkingCopyPresenterTests: XCTestCase {
             staged: [], unstaged: [], untracked: [], conflicts: []
         )
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoadingStatus && !presenter.isDirty }
 
         XCTAssertFalse(presenter.isDirty)
         XCTAssertEqual(presenter.status?.staged.count, 0)
@@ -149,15 +146,14 @@ final class WorkingCopyPresenterTests: XCTestCase {
         backend.stagedDiffs = [makeDiffFile("a.swift")]
         let presenter = WorkingCopyPresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { !presenter.isLoadingStatus }
         presenter.selectFile(id: "a.swift", area: .workingStaged)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(presenter.diff.count, 1)
+        await awaitCondition(on: presenter) { !presenter.isLoadingDiff && presenter.diff.count == 1 }
 
         // After refresh, diff is reloaded with new content.
         backend.stagedDiffs = [makeDiffFile("a.swift"), makeDiffFile("b.swift")]
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoadingDiff && presenter.diff.count == 2 }
         XCTAssertEqual(presenter.diff.count, 2)
     }
 }

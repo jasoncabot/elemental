@@ -20,8 +20,7 @@ final class PresenterTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("b", parents: ["a"]), makeCommit("a")]
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(presenter.commits.count, 2)
+        await awaitCondition(on: presenter) { presenter.commits.count == 2 }
         XCTAssertEqual(presenter.selectedSHA, "b")
     }
 
@@ -31,12 +30,11 @@ final class PresenterTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertFalse(presenter.isDirty)
 
         watcher.fire(DirtyEvent(repo: repo(), changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
         // Commits unchanged (no auto-reload): still showing the original snapshot.
         XCTAssertEqual(presenter.commits.count, 2)
     }
@@ -46,10 +44,10 @@ final class PresenterTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("b"), makeCommit("a")]
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         presenter.select("a")
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertEqual(presenter.selectedSHA, "a")
         XCTAssertFalse(presenter.isDirty)
     }
@@ -59,12 +57,12 @@ final class PresenterTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("b"), makeCommit("a")]
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         presenter.select("a")
         // Simulate a squash: "a" is gone after refresh.
         backend.commitsByScopeAll = [makeCommit("c")]
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertEqual(presenter.selectedSHA, "c") // graceful fallback, no crash
     }
 
@@ -74,13 +72,13 @@ final class PresenterTests: XCTestCase {
                                             isBinary: false, hunks: [], additions: 1, deletions: 0)]
         let presenter = CommitDetailPresenter(backend: backend, repo: repo())
         presenter.show(commit: makeCommit("b"))
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.files.isEmpty }
         XCTAssertEqual(presenter.files.count, 1)
         XCTAssertEqual(backend.diffCallCount, 1)
 
         presenter.show(commit: nil)
         presenter.show(commit: makeCommit("b"))   // served from cache
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { !presenter.files.isEmpty }
         XCTAssertEqual(backend.diffCallCount, 1)
     }
 }

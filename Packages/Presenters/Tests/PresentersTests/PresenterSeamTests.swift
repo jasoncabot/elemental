@@ -30,7 +30,7 @@ final class PresenterSeamTests: XCTestCase {
         let presenter = TimelinePresenter(backend: countingBackend, watcher: FakeWatcher(),
                                          repo: repo(), pageSize: 7)
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertEqual(countingBackend.lastMaxCount, 7, "TimelinePresenter must pass pageSize as maxCount")
     }
 
@@ -40,11 +40,11 @@ final class PresenterSeamTests: XCTestCase {
         backend.commitsByScopeAll = [makeCommit("z"), makeCommit("y"), makeCommit("x")]
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         presenter.select("x")
         XCTAssertEqual(presenter.selectedSHA, "x")
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertEqual(presenter.selectedSHA, "x", "refresh must preserve selection when SHA survives")
         XCTAssertFalse(presenter.isDirty)
     }
@@ -58,14 +58,14 @@ final class PresenterSeamTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
         XCTAssertFalse(presenter.isDirty)
 
         let r = repo()
         watcher.fire(DirtyEvent(repo: r, changedPaths: ["HEAD"]))
         watcher.fire(DirtyEvent(repo: r, changedPaths: ["refs/heads/main"]))
         watcher.fire(DirtyEvent(repo: r, changedPaths: ["ORIG_HEAD"]))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         XCTAssertTrue(presenter.isDirty, "flag must be set after dirty events")
         // Commits must NOT have been reloaded — still the original snapshot.
@@ -82,14 +82,13 @@ final class PresenterSeamTests: XCTestCase {
         let watcher = FakeWatcher()
         let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         watcher.fire(DirtyEvent(repo: repo(), changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(60))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading && !presenter.isDirty }
         XCTAssertFalse(presenter.isDirty, "refresh must clear isDirty")
         XCTAssertEqual(backend.loadCallCount, 2, "refresh must trigger a backend reload")
     }
@@ -104,7 +103,7 @@ final class PresenterSeamTests: XCTestCase {
         backend.commitsByScopeAll = [c1, c2]
         let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
         presenter.start()
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.isLoading }
 
         let found = presenter.commit(for: "sha-beta")
         XCTAssertEqual(found?.subject, "Beta commit")
@@ -120,12 +119,12 @@ final class PresenterSeamTests: XCTestCase {
                                              isBinary: false, hunks: [], additions: 3, deletions: 0)]
         let presenter = CommitDetailPresenter(backend: backend, repo: repo())
         presenter.show(commit: makeCommit("x"))
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.files.isEmpty }
         XCTAssertEqual(backend.diffCallCount, 1)
 
         presenter.show(commit: nil)        // clear
         presenter.show(commit: makeCommit("x"))   // re-show
-        try await Task.sleep(for: .milliseconds(60))
+        await awaitCondition(on: presenter) { !presenter.files.isEmpty }
         XCTAssertEqual(backend.diffCallCount, 1, "second show of same SHA must be cache hit")
     }
 }
