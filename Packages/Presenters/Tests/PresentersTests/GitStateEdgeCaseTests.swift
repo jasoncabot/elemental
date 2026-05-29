@@ -448,9 +448,8 @@ final class GitStateEdgeCaseTests: XCTestCase {
         watcher.fire(DirtyEvent(repo: repoA, changedPaths: ["HEAD"]))
         try await Task.sleep(for: .milliseconds(60))
 
-        // Note: FakeWatcher shares one continuation, so both may receive the event.
-        // In production, each watcher.events(for:) call creates a separate stream per repo.
-        // This test documents that the presenter gracefully handles events regardless.
+        // FakeWatcher broadcasts to all subscribers; in production each watcher.events(for:)
+        // filters by repo. This test documents that the presenter handles events gracefully.
         XCTAssertEqual(presenterA.commits.count, 1)
         XCTAssertEqual(presenterB.commits.count, 1)
     }

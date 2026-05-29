@@ -2,15 +2,34 @@ import Foundation
 import GitData
 
 /// In-memory GitBackend for deterministic presenter tests. No real git involved above the data layer.
+///
+/// Thread-safe: mutable counters and stubs are protected by a lock so tests can run in parallel.
 final class FakeBackend: GitBackend, @unchecked Sendable {
-    var commitsByScopeAll: [Commit] = []
+    private let lock = NSLock()
+
+    private var _commitsByScopeAll: [Commit] = []
+    var commitsByScopeAll: [Commit] {
+        get { lock.lock(); defer { lock.unlock() }; return _commitsByScopeAll }
+        set { lock.lock(); _commitsByScopeAll = newValue; lock.unlock() }
+    }
+
     var diffsBySHA: [String: [DiffFile]] = [:]
     var stagedDiffs:   [DiffFile] = []
     var unstagedDiffs: [DiffFile] = []
     var stubbedRefs: RefSnapshot?
     var stubbedStatus: WorkingCopyStatus?
-    private(set) var diffCallCount = 0
-    private(set) var loadCallCount = 0
+
+    private var _diffCallCount = 0
+    private(set) var diffCallCount: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _diffCallCount }
+        set { lock.lock(); _diffCallCount = newValue; lock.unlock() }
+    }
+
+    private var _loadCallCount = 0
+    private(set) var loadCallCount: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _loadCallCount }
+        set { lock.lock(); _loadCallCount = newValue; lock.unlock() }
+    }
 
     func gitVersion() async throws -> String { "git version fake" }
 
@@ -19,8 +38,10 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error> {
-        loadCallCount += 1
-        let snapshot = commitsByScopeAll
+        lock.lock()
+        _loadCallCount += 1
+        let snapshot = _commitsByScopeAll
+        lock.unlock()
         return AsyncThrowingStream { continuation in
             for c in snapshot { continuation.yield(c) }
             continuation.finish()
@@ -36,7 +57,9 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
-        diffCallCount += 1
+        lock.lock()
+        _diffCallCount += 1
+        lock.unlock()
         switch range {
         case .commit(let sha):     return diffsBySHA[sha] ?? []
         case .workingStaged:       return stagedDiffs
@@ -55,16 +78,35 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
 }
 
 /// Controllable RepoWatcher: tests push DirtyEvents on demand.
+///
+/// Thread-safe and supports multiple concurrent subscribers (e.g. when two presenters
+/// each call `events(for:)` on the same watcher). All continuations receive every fired event.
 final class FakeWatcher: RepoWatcher, @unchecked Sendable {
-    private var continuation: AsyncStream<DirtyEvent>.Continuation?
+    private let lock = NSLock()
+    private var continuations: [(id: UUID, continuation: AsyncStream<DirtyEvent>.Continuation)] = []
 
     func events(for repo: Repository) -> AsyncStream<DirtyEvent> {
-        AsyncStream { continuation in
-            self.continuation = continuation
+        let id = UUID()
+        return AsyncStream { continuation in
+            self.lock.lock()
+            self.continuations.append((id: id, continuation: continuation))
+            self.lock.unlock()
+
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self.continuations.removeAll { $0.id == id }
+                self.lock.unlock()
+            }
         }
     }
 
-    func fire(_ event: DirtyEvent) { continuation?.yield(event) }
+    func fire(_ event: DirtyEvent) {
+        lock.lock()
+        let snapshot = continuations
+        lock.unlock()
+        for entry in snapshot { entry.continuation.yield(event) }
+    }
 }
 
 func makeCommit(_ sha: String, parents: [String] = [], subject: String = "msg") -> Commit {
