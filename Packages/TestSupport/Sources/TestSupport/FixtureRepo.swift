@@ -120,6 +120,88 @@ public final class FixtureRepo {
         return wtURL
     }
 
+    /// Add a linked worktree with a detached HEAD at the given ref. Returns the worktree URL.
+    public func addDetachedWorktree(at ref: String) throws -> URL {
+        let wtURL = url.deletingLastPathComponent()
+            .appendingPathComponent("wt-detached-\(UUID().uuidString)")
+        try run(["worktree", "add", "--detach", "-q", wtURL.path, ref])
+        return wtURL
+    }
+
+    /// Add an orphan worktree (unborn branch, empty index). Returns the worktree URL.
+    public func addOrphanWorktree(branch: String) throws -> URL {
+        let wtURL = url.deletingLastPathComponent()
+            .appendingPathComponent("wt-orphan-\(UUID().uuidString)")
+        try run(["worktree", "add", "--orphan", "-b", branch, "-q", wtURL.path])
+        return wtURL
+    }
+
+    /// Lock a linked worktree by its path.
+    public func lockWorktree(at path: URL, reason: String? = nil) throws {
+        var args = ["worktree", "lock"]
+        if let reason { args += ["--reason", reason] }
+        args.append(path.path)
+        try run(args)
+    }
+
+    /// Stash the current working copy changes.
+    @discardableResult
+    public func stash(message: String? = nil) throws -> Int32 {
+        var args = ["stash", "push"]
+        if let message { args += ["-m", message] }
+        return try run(args)
+    }
+
+    /// Pop the most recent stash entry.
+    @discardableResult
+    public func stashPop() throws -> Int32 {
+        try run(["stash", "pop"])
+    }
+
+    /// Create a shallow clone of this repo at the given depth. Returns the clone's URL.
+    public func makeShallowClone(depth: Int = 1) throws -> URL {
+        let shallowURL = url.deletingLastPathComponent()
+            .appendingPathComponent("shallow-\(UUID().uuidString)")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: git)
+        p.arguments = ["clone", "--depth", "\(depth)", "-q", url.path, shallowURL.path]
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        p.environment = env
+        p.standardError = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return shallowURL
+    }
+
+    /// Switch to an existing branch using `git switch`.
+    @discardableResult
+    public func switchBranch(_ name: String) throws -> Int32 {
+        try run(["switch", "-q", name])
+    }
+
+    /// Start an interactive rebase (non-interactive via GIT_SEQUENCE_EDITOR) to squash last N commits.
+    @discardableResult
+    public func rebaseSquash(last n: Int) throws -> Int32 {
+        // Use a sequence editor that replaces "pick" with "squash" for all but the first line.
+        let editor = "sed -i '2,$s/^pick/squash/' \"$1\""
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_SEQUENCE_EDITOR"] = editor
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: git)
+        p.arguments = ["-C", url.path, "rebase", "-i", "HEAD~\(n)"]
+        p.environment = env
+        p.standardError = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
     /// Add a submodule from another FixtureRepo. `subPath` is the in-repo path.
     public func addSubmodule(_ sub: FixtureRepo, at subPath: String) throws {
         try run(["submodule", "add", "-q", sub.url.path, subPath])

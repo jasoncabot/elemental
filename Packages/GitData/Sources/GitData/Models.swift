@@ -16,11 +16,18 @@ public struct Worktree: Hashable, Sendable {
     public var head: String?
     public var branch: String?
     public var isBare: Bool
-    public init(path: URL, head: String?, branch: String?, isBare: Bool) {
+    public var isDetached: Bool
+    public var isLocked: Bool
+    public var isPrunable: Bool
+    public init(path: URL, head: String?, branch: String?, isBare: Bool,
+                isDetached: Bool = false, isLocked: Bool = false, isPrunable: Bool = false) {
         self.path = path
         self.head = head
         self.branch = branch
         self.isBare = isBare
+        self.isDetached = isDetached
+        self.isLocked = isLocked
+        self.isPrunable = isPrunable
     }
 }
 

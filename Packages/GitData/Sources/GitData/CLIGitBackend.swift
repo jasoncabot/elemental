@@ -52,9 +52,16 @@ public actor CLIGitBackend: GitBackend {
         var head: String?
         var branch: String?
         var bare = false
+        var detached = false
+        var locked = false
+        var prunable = false
         func flush() {
-            if let path { result.append(Worktree(path: path, head: head, branch: branch, isBare: bare)) }
+            if let path {
+                result.append(Worktree(path: path, head: head, branch: branch, isBare: bare,
+                                       isDetached: detached, isLocked: locked, isPrunable: prunable))
+            }
             path = nil; head = nil; branch = nil; bare = false
+            detached = false; locked = false; prunable = false
         }
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("worktree ") {
@@ -65,6 +72,12 @@ public actor CLIGitBackend: GitBackend {
                 branch = String(line.dropFirst("branch ".count))
             } else if line == "bare" {
                 bare = true
+            } else if line == "detached" {
+                detached = true
+            } else if line == "locked" || line.hasPrefix("locked ") {
+                locked = true
+            } else if line == "prunable" || line.hasPrefix("prunable ") {
+                prunable = true
             } else if line.isEmpty {
                 flush()
             }
