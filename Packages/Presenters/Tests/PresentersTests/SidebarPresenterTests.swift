@@ -30,7 +30,7 @@ final class SidebarPresenterTests: XCTestCase {
         let repo = makeRepo()
         presenter.setRepositories([repo])
 
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false }
 
         let item = try XCTUnwrap(presenter.items.first)
         XCTAssertEqual(item.branches.count, 2)
@@ -48,7 +48,7 @@ final class SidebarPresenterTests: XCTestCase {
         let presenter = SidebarPresenter(backend: backend, watcher: FakeWatcher())
         presenter.setRepositories([makeRepo()])
 
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.items.first?.refs != nil }
 
         XCTAssertFalse(presenter.items.isEmpty)
         XCTAssertNotNil(presenter.items.first?.refs)
@@ -93,12 +93,11 @@ final class SidebarPresenterTests: XCTestCase {
         let presenter = SidebarPresenter(backend: FakeBackend(), watcher: watcher)
         let repo = makeRepo()
         presenter.setRepositories([repo])
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false }
         XCTAssertFalse(presenter.isDirty)
 
         watcher.fire(DirtyEvent(repo: repo, changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
         // Refs not reloaded: items still have whatever was loaded on start.
     }
 
@@ -108,11 +107,10 @@ final class SidebarPresenterTests: XCTestCase {
         let presenter = SidebarPresenter(backend: backend, watcher: watcher)
         let repo = makeRepo()
         presenter.setRepositories([repo])
-        try await Task.sleep(for: .milliseconds(20))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false }
 
         watcher.fire(DirtyEvent(repo: repo, changedPaths: ["HEAD"]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(presenter.isDirty)
+        await awaitCondition(on: presenter) { presenter.isDirty }
 
         backend.stubbedRefs = RefSnapshot(
             head: .attached(branch: "new-branch", sha: "xyz"),
@@ -120,7 +118,7 @@ final class SidebarPresenterTests: XCTestCase {
             remotes: [], tags: []
         )
         presenter.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitCondition(on: presenter) { presenter.items.first?.isLoadingRefs == false && !presenter.isDirty }
         XCTAssertFalse(presenter.isDirty)
         XCTAssertEqual(presenter.items.first?.branches.count, 1)
         XCTAssertEqual(presenter.items.first?.branches.first?.name, "new-branch")

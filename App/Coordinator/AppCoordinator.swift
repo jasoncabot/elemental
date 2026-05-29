@@ -142,14 +142,28 @@ final class AppCoordinator {
         }
     }
 
-    // MARK: - Watcher-based auto-removal
+    // MARK: - Watcher-based auto-removal and branch refresh
+
+    /// Paths within the git dir that, when changed, indicate HEAD or branch ref has moved.
+    private static let headRelatedPaths: [String] = ["HEAD", "refs/heads/", "packed-refs"]
 
     private func startWatching(_ repo: Repository) {
         watcherTasks[repo.rootURL] = Task { [weak self, watcher, repo] in
-            for await _ in watcher.events(for: repo) {
+            for await event in watcher.events(for: repo) {
                 guard let self else { return }
                 if !FileManager.default.fileExists(atPath: repo.rootURL.path) {
                     self.removeRepo(repo)
+                    return
+                }
+                // If the changed paths indicate a branch switch or HEAD move,
+                // automatically refresh the branch name in the toolbar (lightweight).
+                if self.activeRepoURL == repo.rootURL {
+                    let isHeadChange = event.changedPaths.contains { path in
+                        Self.headRelatedPaths.contains(where: { path.hasSuffix($0) || path.contains($0) })
+                    }
+                    if isHeadChange {
+                        self.loadBranch(for: repo)
+                    }
                 }
             }
         }

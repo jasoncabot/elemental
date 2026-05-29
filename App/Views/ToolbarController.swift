@@ -53,6 +53,9 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         branchLabel.font = Theme.Font.secondary
         branchLabel.textColor = .secondaryLabelColor
         branchLabel.lineBreakMode = .byTruncatingTail
+        branchLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        branchLabel.maximumNumberOfLines = 1
+        branchLabel.preferredMaxLayoutWidth = 200
 
         modeControl.target = self
         modeControl.action = #selector(modeChanged)
@@ -90,6 +93,7 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
 
     func setBranch(_ branch: String?) {
         branchLabel.stringValue = branch.map { "⎇ \($0)" } ?? ""
+        branchLabel.toolTip = branch
     }
 
     var reviewMode: ReviewMode {
@@ -127,6 +131,8 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
             let item = NSToolbarItem(itemIdentifier: id)
             item.view = branchLabel
             item.label = "Branch"
+            item.minSize = NSSize(width: 40, height: 22)
+            item.maxSize = NSSize(width: 200, height: 22)
             return item
         case ItemID.mode:
             let item = NSToolbarItem(itemIdentifier: id)
