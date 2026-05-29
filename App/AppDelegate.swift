@@ -79,17 +79,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #!/bin/zsh
         # el - open a directory in Elemental
         # Usage: el [path]   (defaults to current directory)
-        if [[ $# -eq 0 ]]; then
-            open -a Elemental
-            exit 0
-        fi
-        path="$1"
+        path="${1:-.}"
         abs_path=$(cd "$path" 2>/dev/null && pwd)
         if [[ -z "$abs_path" ]]; then
             echo "el: not a directory: $path" >&2
             exit 1
         fi
-        open -a Elemental "$abs_path"
+        /usr/bin/open -a Elemental "$abs_path"
         """
 
         let fm = FileManager.default
