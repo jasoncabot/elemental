@@ -2,6 +2,7 @@ import AppKit
 
 /// A small rounded pill used for ref names, file signals, and risk markers.
 /// Tinted, low-contrast fills keep the UI calm while still reading as semantic.
+@objc(BadgeLabel)
 final class BadgeLabel: NSView {
     private let label = NSTextField(labelWithString: "")
     private var fillColor: NSColor = .clear

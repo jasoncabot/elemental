@@ -389,6 +389,7 @@ extension FilesViewController: NSOutlineViewDelegate {
 
 // MARK: - Subsystem header cell
 
+@objc(SubsystemHeaderView)
 private final class SubsystemHeaderView: NSTableCellView {
     private let icon = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
@@ -464,6 +465,7 @@ private final class SubsystemHeaderView: NSTableCellView {
 
 // MARK: - Directory row cell (working-copy tree)
 
+@objc(DirRowView)
 private final class DirRowView: NSTableCellView {
     private let icon = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
@@ -509,6 +511,7 @@ private final class DirRowView: NSTableCellView {
 
 // MARK: - File row cell
 
+@objc(FileRowView)
 private final class FileRowView: NSTableCellView {
     private let statusBar = NSView()
     private let icon = NSImageView()
@@ -657,6 +660,7 @@ private final class FileRowView: NSTableCellView {
 
 /// Shows the reviewed commit's message — subject, body, metadata — plus any git note, so the
 /// intent behind the change sits alongside the files it touched. Pure git metadata; no AI.
+@objc(CommitSummaryView)
 private final class CommitSummaryView: NSView {
     private let subjectLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")

@@ -32,12 +32,22 @@ final class TimelineViewController: NSViewController, PresenterObserving {
             oldValue?.removeObserver(self)
             workingCopyPresenter?.addObserver(self)
             workingCopySelected = false
+            pendingWorkingCopySelection = false
             refreshWorkingCopyRow()
         }
     }
 
+    /// Selects the working copy row as soon as it first becomes visible.
+    /// Has no effect if the row never appears (clean working copy).
+    func selectWorkingCopyWhenAvailable() {
+        pendingWorkingCopySelection = true
+    }
+
     /// True while the user is reviewing the working copy rather than a commit.
     private(set) var workingCopySelected = false
+
+    /// When true, the working copy row will be auto-selected the first time it becomes visible.
+    private var pendingWorkingCopySelection = false
 
     private let tableView = TimelineTableView()
     private let scrollView = NSScrollView()
@@ -261,6 +271,10 @@ final class TimelineViewController: NSViewController, PresenterObserving {
                                  untracked: status.untracked.count, conflicts: status.conflicts.count,
                                  draft: wc.preparedMessage)
         workingCopyRow.isSelected = workingCopySelected
+        if pendingWorkingCopySelection {
+            pendingWorkingCopySelection = false
+            selectWorkingCopy()
+        }
     }
 
     private func reloadFromPresenter() {
@@ -387,6 +401,7 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
 
 // MARK: - Timeline table (keyboard nav)
 
+@objc(TimelineTableView)
 private final class TimelineTableView: NSTableView {
     var onNavigate: ((Int) -> Void)?
 
@@ -404,6 +419,7 @@ private final class TimelineTableView: NSTableView {
 
 // MARK: - Row view (rounded selection)
 
+@objc(TimelineRowView)
 private final class TimelineRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
         guard isSelected else { return }
@@ -416,6 +432,7 @@ private final class TimelineRowView: NSTableRowView {
 
 // MARK: - Cell view
 
+@objc(TimelineCellView)
 private final class TimelineCellView: NSTableCellView {
     private let subjectLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
@@ -509,6 +526,7 @@ private final class TimelineCellView: NSTableCellView {
 // MARK: - Dirty banner
 
 /// Non-modal strip shown when git data changed on disk; never auto-reloads.
+@objc(DirtyBannerView)
 final class DirtyBannerView: NSView {
     let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
 
@@ -559,6 +577,7 @@ final class DirtyBannerView: NSView {
 /// The pinned, selectable entry above the commit list representing the *current* working copy —
 /// the draft tip of the timeline. Shows staged/unstaged/untracked counts and any prepared commit
 /// message. Selecting it routes the detail panes to working-copy review.
+@objc(WorkingCopyRowView)
 private final class WorkingCopyRowView: NSView {
     var onSelect: (() -> Void)?
     var isSelected = false { didSet { needsDisplay = true } }

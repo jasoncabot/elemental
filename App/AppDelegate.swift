@@ -2,31 +2,32 @@ import AppKit
 import GitData
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var coordinator: AppCoordinator?
+    private var coordinators: [AppCoordinator] = []
+    private var backend: CLIGitBackend?
+    private var watcher: FSEventsRepoWatcher?
+    /// Set by application(_:open:) before the deferred first-window fires, so we skip
+    /// opening an empty session-restore window when launched directly via `el <path>`.
+    private var openedViaURL = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpMainMenu()
 
-        // Build the singleton data-layer objects.
-        // GitService (built by another agent) is not available on this branch;
-        // we wire directly to CLIGitBackend + FSEventsRepoWatcher against the
-        // GitBackend / RepoWatcher protocols so swapping in GitService later is
-        // a one-line change in AppDelegate only.
         guard let backend = try? CLIGitBackend() else {
             showFatalAlert(message: "git not found",
                            detail: "Elemental requires git to be installed and on your PATH.")
             return
         }
         let watcher = FSEventsRepoWatcher()
+        self.backend = backend
+        self.watcher = watcher
 
-        let c = AppCoordinator(backend: backend, watcher: watcher)
-        coordinator = c
-
-        c.windowController.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
-        Task { @MainActor in
-            await c.start()
+        // Defer so application(_:open:) can set openedViaURL first when the app is
+        // cold-launched with a path argument (e.g. `el /some/repo`).
+        DispatchQueue.main.async {
+            if !self.openedViaURL {
+                self.openNewWindow(restoreSession: true)
+            }
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -35,7 +36,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        urls.forEach { coordinator?.addRepository(at: $0) }
+        guard !urls.isEmpty else { return }
+        openedViaURL = true
+        // Always open a dedicated new window for this invocation.
+        openNewWindow(restoreSession: false)
+        if let c = coordinators.last {
+            urls.forEach { c.addRepository(at: $0) }
+        }
+    }
+
+    // MARK: - Coordinator management
+
+    private var keyCoordinator: AppCoordinator? {
+        let key = NSApp.keyWindow
+        return coordinators.first { $0.windowController.window === key }
+            ?? coordinators.last
+    }
+
+    @discardableResult
+    private func makeNewCoordinator() -> AppCoordinator? {
+        MainActor.assumeIsolated {
+            guard let backend, let watcher else { return nil }
+            let c = AppCoordinator(backend: backend, watcher: watcher)
+            coordinators.append(c)
+            guard let window = c.windowController.window else { return c }
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: window, queue: .main
+            ) { [weak self, weak c] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let c else { return }
+                    self.coordinators.removeAll { $0 === c }
+                }
+            }
+            return c
+        }
+    }
+
+    private func openNewWindow(restoreSession: Bool) {
+        MainActor.assumeIsolated {
+            guard let c = makeNewCoordinator() else { return }
+            if let prev = coordinators.dropLast().last?.windowController.window {
+                let pt = NSPoint(x: prev.frame.minX + 22, y: prev.frame.maxY - 22)
+                c.windowController.window?.setFrameTopLeftPoint(pt)
+            }
+            c.windowController.showWindow(nil)
+            if restoreSession {
+                Task { @MainActor in await c.start() }
+            }
+        }
     }
 
     // MARK: - Menu
@@ -60,6 +108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "New Window",
+                         action: #selector(newWindow(_:)),
+                         keyEquivalent: "n")
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Open Repository…",
                          action: #selector(openRepository(_:)),
                          keyEquivalent: "o")
@@ -91,6 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func newWindow(_ sender: Any?) {
+        openNewWindow(restoreSession: false)
+    }
 
     @objc private func installCommandLineTool(_ sender: Any?) {
         let script = """
@@ -132,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func removeCurrentRepository(_ sender: Any?) {
-        Task { @MainActor [weak self] in self?.coordinator?.removeCurrentRepository() }
+        Task { @MainActor [weak self] in self?.keyCoordinator?.removeCurrentRepository() }
     }
 
     @objc private func increaseDiffFontSize(_ sender: Any?) {
@@ -149,7 +205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(removeCurrentRepository(_:)) {
-            return MainActor.assumeIsolated { self.coordinator?.activeRepoURL != nil }
+            return MainActor.assumeIsolated { self.keyCoordinator?.activeRepoURL != nil }
+        }
+        if menuItem.action == #selector(newWindow(_:)) {
+            return backend != nil
         }
         if menuItem.action == #selector(increaseDiffFontSize(_:)) {
             return Theme.Font.diffFontSize < Theme.Font.maxDiffSize
@@ -161,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openRepository(_ sender: Any?) {
+        let coordinator = keyCoordinator
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -169,7 +229,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.message = "Choose a git repository folder"
         let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in self?.coordinator?.addRepository(at: url) }
+            Task { @MainActor in
+                if let coordinator {
+                    coordinator.addRepository(at: url)
+                } else {
+                    self?.openNewWindow(restoreSession: false)
+                    self?.keyCoordinator?.addRepository(at: url)
+                }
+            }
         }
         if let window = coordinator?.windowController.window {
             panel.beginSheetModal(for: window, completionHandler: handler)

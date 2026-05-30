@@ -128,6 +128,7 @@ final class AppCoordinator {
         activeRepoURL = url
         // Remember this as the repo to restore on the next plain launch.
         UserDefaults.standard.set(url.path, forKey: Self.lastActiveRepoKey)
+        windowController.window?.title = url.lastPathComponent
         refreshRepoList()
         loadBranch(for: repo)
 
@@ -162,12 +163,19 @@ final class AppCoordinator {
 
         timelineVC.presenter = timeline
         timelineVC.workingCopyPresenter = workingCopy
-        // Default to reviewing the selected commit; the working-copy row is opt-in.
-        activeDetailSource = detail
-        filesVC.source = detail
-        diffVC.source = detail
-        let initialCommit = timeline.selectedSHA.flatMap { timeline.commit(for: $0) }
-        detail.show(commit: initialCommit)
+        if timeline.selectedSHA == nil {
+            // No commit selected — show working copy changes by default.
+            activeDetailSource = workingCopy
+            filesVC.source = workingCopy
+            diffVC.source = workingCopy
+            timelineVC.selectWorkingCopyWhenAvailable()
+        } else {
+            activeDetailSource = detail
+            filesVC.source = detail
+            diffVC.source = detail
+            let initialCommit = timeline.selectedSHA.flatMap { timeline.commit(for: $0) }
+            detail.show(commit: initialCommit)
+        }
     }
 
     private func loadBranch(for repo: Repository) {

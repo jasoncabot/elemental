@@ -39,7 +39,7 @@ enum Theme {
         static let fileGroup = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
         static let defaultDiffSize: CGFloat = 11
-        static let minDiffSize: CGFloat = 9
+        static let minDiffSize: CGFloat = 6
         static let maxDiffSize: CGFloat = 18
 
         static var diffFontSize: CGFloat {
@@ -55,8 +55,8 @@ enum Theme {
         }
 
         static func code() -> NSFont { .monospacedSystemFont(ofSize: diffFontSize, weight: .regular) }
-        static var codeGutter: NSFont { .monospacedSystemFont(ofSize: max(8, diffFontSize - 2), weight: .regular) }
-        static var codeMeta: NSFont { .monospacedSystemFont(ofSize: max(8, diffFontSize - 1.5), weight: .medium) }
+        static var codeGutter: NSFont { .monospacedSystemFont(ofSize: max(minDiffSize, diffFontSize - 2), weight: .regular) }
+        static var codeMeta: NSFont { .monospacedSystemFont(ofSize: max(minDiffSize, diffFontSize - 1.5), weight: .medium) }
     }
 
     // MARK: - Color

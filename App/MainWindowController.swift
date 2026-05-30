@@ -36,6 +36,7 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
             defer: false
         )
         window.title = "Elemental"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
         window.toolbar = toolbarController.toolbar

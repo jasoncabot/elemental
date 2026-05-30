@@ -202,9 +202,14 @@ final class DiffViewController: NSViewController, PresenterObserving {
         noticeView = nil
 
         // Build rows per hunk.
+        let gw = Self.gutterWidth(for: file)
         var newSections: [HunkSectionView] = []
         for (i, hunk) in file.hunks.enumerated() {
-            let visible = focusChanges
+            // Focus mode hides whitespace/moved lines to surface substantive edits.
+            // Skip it for pure deletions (no additions): there is nothing to focus towards
+            // and the filter would strip lines the user needs to see what was removed.
+            let applyFocus = focusChanges && file.additions > 0
+            let visible = applyFocus
                 ? hunk.lines.filter { $0.kind == .context || $0.change == .substantive }
                 : hunk.lines
             let rows: [HunkRow] = sideBySide
@@ -215,7 +220,8 @@ final class DiffViewController: NSViewController, PresenterObserving {
             let section = reuseOrMake(index: i,
                                       text: hunk.context ?? hunk.header,
                                       rows: rows,
-                                      contentMinWidth: contentMinWidth)
+                                      contentMinWidth: contentMinWidth,
+                                      gutterWidth: gw)
             section.isCollapsed = collapsedHunks.contains(i)
             section.configureSideBySide(sideBySide)
             newSections.append(section)
@@ -256,7 +262,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
     }
 
     private func reuseOrMake(index: Int, text: String, rows: [HunkRow],
-                             contentMinWidth: CGFloat) -> HunkSectionView {
+                             contentMinWidth: CGFloat, gutterWidth: CGFloat) -> HunkSectionView {
         let section: HunkSectionView
         if let existing = hunkSections.first(where: { $0.hunkIndex == index }) {
             section = existing
@@ -267,6 +273,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         }
         section.rows = rows
         section.contentMinWidth = contentMinWidth
+        section.gutterWidth = gutterWidth
         section.headerText = text
         section.reloadTable()
         return section
@@ -336,6 +343,16 @@ final class DiffViewController: NSViewController, PresenterObserving {
 
     // MARK: - Row building helpers
 
+    private static func gutterWidth(for file: DiffFile) -> CGFloat {
+        let maxNum = file.hunks.flatMap(\.lines)
+            .flatMap { [$0.oldLineNumber, $0.newLineNumber] }
+            .compactMap { $0 }
+            .max() ?? 1
+        let digits = max(1, String(maxNum).count)
+        let charWidth = Theme.Font.codeGutter.maximumAdvancement.width
+        return ceil(CGFloat(digits) * charWidth) + 10
+    }
+
     private func computeContentMinWidth(_ rows: [HunkRow]) -> CGFloat {
         let charWidth = Theme.Font.code().maximumAdvancement.width
         func w(_ text: String) -> CGFloat { CGFloat(text.count + 2) * charWidth + 24 }
@@ -376,6 +393,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
 
 // MARK: - Per-hunk section view
 
+@objc(HunkSectionView)
 private final class HunkSectionView: NSView {
     let hunkIndex: Int
     var rows: [HunkRow] = []
@@ -397,8 +415,19 @@ private final class HunkSectionView: NSView {
     let innerScroll: HorizontalScrollView
     private let headerLabel: NSTextField
     private let headerBg: NSView
+    private let oldCol: NSTableColumn
+    private let newCol: NSTableColumn
     private let innerContentCol: NSTableColumn
     private var innerHeightConstraint: NSLayoutConstraint!
+
+    var gutterWidth: CGFloat = 32 {
+        didSet {
+            guard abs(oldCol.width - gutterWidth) > 0.5 else { return }
+            for col in [oldCol, newCol] {
+                col.width = gutterWidth; col.minWidth = gutterWidth; col.maxWidth = gutterWidth
+            }
+        }
+    }
 
     private var rowsHeight: CGFloat {
         CGFloat(rows.count) * Theme.Metric.diffLineHeight
@@ -417,10 +446,10 @@ private final class HunkSectionView: NSView {
         headerBg.wantsLayer = true
         headerBg.translatesAutoresizingMaskIntoConstraints = false
 
-        let oldCol = NSTableColumn(identifier: .init("old"))
-        oldCol.width = 46; oldCol.minWidth = 46; oldCol.maxWidth = 46; oldCol.resizingMask = []
-        let newCol = NSTableColumn(identifier: .init("new"))
-        newCol.width = 46; newCol.minWidth = 46; newCol.maxWidth = 46; newCol.resizingMask = []
+        oldCol = NSTableColumn(identifier: .init("old"))
+        oldCol.width = 32; oldCol.minWidth = 32; oldCol.maxWidth = 32; oldCol.resizingMask = []
+        newCol = NSTableColumn(identifier: .init("new"))
+        newCol.width = 32; newCol.minWidth = 32; newCol.maxWidth = 32; newCol.resizingMask = []
         innerContentCol = NSTableColumn(identifier: .init("content"))
         innerContentCol.resizingMask = []
 
@@ -659,6 +688,7 @@ extension DiffViewController {
 
 /// NSScrollView places non-flipped document views at the bottom of the visible area when
 /// the content is shorter than the viewport. Flipping the document view pins it to the top.
+@objc(DiffFlippedView)
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
@@ -668,6 +698,7 @@ private final class FlippedView: NSView {
 /// A scroll view that only handles horizontal scroll events, passing vertical ones up the
 /// responder chain to the outer scroll view. Without this, each inner hunk scroll view
 /// rubber-bands vertically on a trackpad, stealing events and making the outer scroll jerky.
+@objc(DiffHorizontalScrollView)
 private final class HorizontalScrollView: NSScrollView {
     override func scrollWheel(with event: NSEvent) {
         if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
@@ -680,6 +711,7 @@ private final class HorizontalScrollView: NSScrollView {
 
 // MARK: - Row background
 
+@objc(DiffRowView)
 private final class DiffRowView: NSTableRowView {
     var fill: NSColor = .clear
     override func drawBackground(in dirtyRect: NSRect) { fill.setFill(); dirtyRect.fill() }
@@ -687,6 +719,7 @@ private final class DiffRowView: NSTableRowView {
 
 // MARK: - Side-by-side line cell
 
+@objc(DiffSplitCellView)
 private final class SplitCellView: NSTableCellView {
     private let leftBG = NSView()
     private let rightBG = NSView()
@@ -801,6 +834,7 @@ private final class SplitCellView: NSTableCellView {
 
 // MARK: - File header
 
+@objc(DiffHeaderView)
 private final class DiffHeaderView: NSView {
     private let icon = NSImageView()
     private let areaBadgeStack = NSStackView()
@@ -869,26 +903,42 @@ private final class DiffHeaderView: NSView {
         divider.boxType = .separator
         divider.translatesAutoresizingMaskIntoConstraints = false
 
-        let row = NSStackView(views: [icon, areaBadgeStack, pathLabel, signalStack,
-                                      showButton, focusButton, modeButton, statLabel])
-        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.setCustomSpacing(10, after: pathLabel)
-        addSubview(row); addSubview(divider)
+        // Left group: info elements that can shrink when space is tight.
+        let leftRow = NSStackView(views: [icon, areaBadgeStack, pathLabel, signalStack,
+                                          showButton, focusButton])
+        leftRow.orientation = .horizontal; leftRow.spacing = 8; leftRow.alignment = .centerY
+        leftRow.translatesAutoresizingMaskIntoConstraints = false
+        leftRow.setCustomSpacing(10, after: pathLabel)
 
-        let rowTrailing = row.trailingAnchor.constraint(equalTo: trailingAnchor,
-                                                        constant: -Theme.Metric.pad)
-            .id("DiffHeader.row.trailing")
-        rowTrailing.priority = .defaultHigh
+        // Right group: stat + mode toggle — always pinned to the trailing edge.
+        let rightRow = NSStackView(views: [statLabel, modeButton])
+        rightRow.orientation = .horizontal; rightRow.spacing = 8; rightRow.alignment = .centerY
+        rightRow.translatesAutoresizingMaskIntoConstraints = false
+        rightRow.setHuggingPriority(.required, for: .horizontal)
+
+        addSubview(leftRow); addSubview(rightRow); addSubview(divider)
+
         clipsToBounds = true
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Theme.Metric.pad)
-                .id("DiffHeader.row.leading"),
-            rowTrailing,
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 8)
-                .id("DiffHeader.row.top"),
-            row.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -8)
-                .id("DiffHeader.row.bottom"),
+            leftRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Theme.Metric.pad)
+                .id("DiffHeader.leftRow.leading"),
+            leftRow.topAnchor.constraint(equalTo: topAnchor, constant: 8)
+                .id("DiffHeader.leftRow.top"),
+            leftRow.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -8)
+                .id("DiffHeader.leftRow.bottom"),
+                {
+                let c = leftRow.trailingAnchor.constraint(lessThanOrEqualTo: rightRow.leadingAnchor,
+                                                          constant: -8)
+                    .id("DiffHeader.leftRow.trailing")
+                c.priority = .defaultHigh
+                return c
+            }(),
+
+            rightRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Theme.Metric.pad)
+                .id("DiffHeader.rightRow.trailing"),
+            rightRow.centerYAnchor.constraint(equalTo: leftRow.centerYAnchor)
+                .id("DiffHeader.rightRow.centerY"),
+
             divider.leadingAnchor.constraint(equalTo: leadingAnchor)
                 .id("DiffHeader.divider.leading"),
             divider.trailingAnchor.constraint(equalTo: trailingAnchor)

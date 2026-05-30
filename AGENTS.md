@@ -28,6 +28,47 @@ that improves a feature while breaking one of these is a regression.
 When in doubt, optimize for: works offline, works instantly, works on code you're not allowed
 to send anywhere.
 
+## AppKit Conventions
+
+### NSLayoutConstraint identifiers
+
+Every `NSLayoutConstraint` **must** have a human-readable `.identifier` set via the `.id(_:)` helper
+defined in `Theme.swift`. This makes constraint-conflict logs in Xcode's debugger and the runtime
+unsatisfiable-constraint output readable without decoding opaque memory addresses.
+
+```swift
+// good
+view.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8)
+    .id("MyView.label.leading")
+
+// bad — anonymous constraint, invisible in conflict logs
+view.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: 8)
+```
+
+Use the format `TypeName.subviewRole.edge` (e.g. `DiffHeader.pathLabel.trailing`). Activate the
+constraint in the same expression or immediately after — never split the `.id()` call onto a
+separate line from the constraint that owns it.
+
+### NSView subclass names
+
+Every custom `NSView` subclass **must** carry an `@objc(Name)` annotation so the class name in
+constraint-conflict logs is readable instead of Swift-mangled (e.g. `DiffHeaderView` instead of
+`_TtC9ElementalP33_…DiffHeaderView`).
+
+```swift
+// good
+@objc(DiffHeaderView)
+private final class DiffHeaderView: NSView { … }
+
+// bad — mangled name appears in constraint logs
+private final class DiffHeaderView: NSView { … }
+```
+
+The `@objc(Name)` annotation affects only the Objective-C runtime name; Swift access control
+(`private`, `internal`) is unchanged.
+
+See [ux.md](ux.md) for broader UI/UX guidance.
+
 ## Testing the Git Backend
 
 The `GitData` package tests exercise the real git binary against disposable fixture repositories.

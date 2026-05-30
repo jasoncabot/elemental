@@ -22,7 +22,18 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
 
     let toolbar = NSToolbar(identifier: "ElementalMainToolbar")
 
-    private let repoPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let repoButton: NSButton = {
+        let b = NSButton(title: "No Repository", target: nil, action: nil)
+        b.bezelStyle = .recessed
+        b.controlSize = .regular
+        b.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        b.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        b.image?.isTemplate = true
+        b.imagePosition = .imageTrailing
+        b.translatesAutoresizingMaskIntoConstraints = false
+        return b
+    }()
+    private let repoMenu = NSMenu()
     private let branchLabel = NSTextField(labelWithString: "")
     private let modeControl = NSSegmentedControl(
         labels: ReviewMode.allCases.map(\.title),
@@ -45,10 +56,8 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         toolbar.allowsUserCustomization = false
         toolbar.centeredItemIdentifiers = [ItemID.mode]
 
-        repoPopup.target = self
-        repoPopup.action = #selector(repoChanged)
-        repoPopup.bezelStyle = .toolbar
-        repoPopup.controlSize = .large
+        repoButton.target = self
+        repoButton.action = #selector(repoButtonClicked(_:))
 
         branchLabel.font = Theme.Font.secondary
         branchLabel.textColor = .secondaryLabelColor
@@ -80,21 +89,25 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
 
     func setRepos(_ repos: [RepoChoice], selected: URL?) {
         self.repos = repos
-        repoPopup.removeAllItems()
-        for repo in repos {
-            repoPopup.addItem(withTitle: repo.title)
-            repoPopup.lastItem?.image = NSImage(
-                systemSymbolName: "folder", accessibilityDescription: nil)
-            repoPopup.lastItem?.representedObject = repo.id
-        }
+        repoMenu.removeAllItems()
         if repos.isEmpty {
-            repoPopup.addItem(withTitle: "No Repository")
-            repoPopup.isEnabled = false
+            repoButton.title = "No Repository"
+            repoButton.isEnabled = false
         } else {
-            repoPopup.isEnabled = true
-            if let selected, let idx = repos.firstIndex(where: { $0.id == selected }) {
-                repoPopup.selectItem(at: idx)
+            repoButton.isEnabled = true
+            for repo in repos {
+                let item = NSMenuItem(title: repo.title, action: #selector(repoMenuItemSelected(_:)),
+                                     keyEquivalent: "")
+                item.target = self
+                item.representedObject = repo.id
+                item.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+                item.state = repo.id == selected ? .on : .off
+                repoMenu.addItem(item)
             }
+            let selectedTitle = repos.first(where: { $0.id == selected })?.title
+                             ?? repos.first?.title
+                             ?? "Repository"
+            repoButton.title = selectedTitle
         }
     }
 
@@ -109,8 +122,13 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
 
     // MARK: - Actions
 
-    @objc private func repoChanged() {
-        guard let url = repoPopup.selectedItem?.representedObject as? URL else { return }
+    @objc private func repoButtonClicked(_ sender: NSButton) {
+        let location = NSPoint(x: 0, y: sender.bounds.height + 4)
+        repoMenu.popUp(positioning: nil, at: location, in: sender)
+    }
+
+    @objc private func repoMenuItemSelected(_ item: NSMenuItem) {
+        guard let url = item.representedObject as? URL else { return }
         delegate?.toolbarDidSelectRepo(url)
     }
 
@@ -130,7 +148,7 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         switch id {
         case ItemID.repo:
             let item = NSToolbarItem(itemIdentifier: id)
-            item.view = repoPopup
+            item.view = repoButton
             item.label = "Repository"
             item.visibilityPriority = .high
             return item
