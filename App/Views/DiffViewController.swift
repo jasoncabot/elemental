@@ -48,6 +48,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private var currentSelection: DetailSelection?
     private var currentFile: DiffFile?
     private var sideBySide = false
+    private var sizeAtGestureStart: CGFloat = Theme.Font.defaultDiffSize
     private var collapsedHunks: Set<Int> = []
     private var noiseExpanded = false
     private var focusChanges = false
@@ -62,8 +63,17 @@ final class DiffViewController: NSViewController, PresenterObserving {
 
     @objc private func fontSizeDidChange() { reload() }
 
+    @objc private func handleMagnify(_ gr: NSMagnificationGestureRecognizer) {
+        if gr.state == .began { sizeAtGestureStart = Theme.Font.diffFontSize }
+        let range = Theme.Font.maxDiffSize - Theme.Font.minDiffSize
+        Theme.Font.diffFontSize = sizeAtGestureStart + gr.magnification * range * 0.4
+    }
+
     override func loadView() {
         outerContent.translatesAutoresizingMaskIntoConstraints = false
+        outerContent.addGestureRecognizer(
+            NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:)))
+        )
 
         outerScroll.documentView = outerContent
         outerScroll.drawsBackground = false
@@ -700,13 +710,23 @@ private final class FlippedView: NSView {
 /// rubber-bands vertically on a trackpad, stealing events and making the outer scroll jerky.
 @objc(DiffHorizontalScrollView)
 private final class HorizontalScrollView: NSScrollView {
+    // Locked at .began so momentum events stay on the same axis.
+    private var handlingHorizontally = false
+
     override func scrollWheel(with event: NSEvent) {
-        if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
+        if event.phase == .began {
+            handlingHorizontally = abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY)
+        } else if event.phase.isEmpty && event.momentumPhase.isEmpty {
+            // Non-trackpad scroll wheel: decide per-event.
+            handlingHorizontally = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+        }
+        if handlingHorizontally {
             super.scrollWheel(with: event)
         } else {
             nextResponder?.scrollWheel(with: event)
         }
     }
+
 }
 
 // MARK: - Row background
