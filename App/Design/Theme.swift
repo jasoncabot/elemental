@@ -20,7 +20,7 @@ enum Theme {
         static let timelineRowHeight: CGFloat = 56
         static let fileRowHeight: CGFloat = 26
         static let groupRowHeight: CGFloat = 24
-        static let diffLineHeight: CGFloat = 18
+        static var diffLineHeight: CGFloat { ceil(Font.diffFontSize * 1.5) }
         static let hunkHeaderHeight: CGFloat = 26
     }
 
@@ -38,12 +38,25 @@ enum Theme {
         static let file = NSFont.systemFont(ofSize: 12, weight: .regular)
         static let fileGroup = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
-        /// Tuned monospace for the diff body — a touch larger than chrome for readability.
-        static func code() -> NSFont {
-            .monospacedSystemFont(ofSize: 12, weight: .regular)
+        static let defaultDiffSize: CGFloat = 11
+        static let minDiffSize: CGFloat = 9
+        static let maxDiffSize: CGFloat = 18
+
+        static var diffFontSize: CGFloat {
+            get {
+                let v = UserDefaults.standard.double(forKey: "diffFontSize")
+                return v > 0 ? CGFloat(v) : defaultDiffSize
+            }
+            set {
+                let clamped = max(minDiffSize, min(maxDiffSize, newValue))
+                UserDefaults.standard.set(Double(clamped), forKey: "diffFontSize")
+                NotificationCenter.default.post(name: .diffFontSizeDidChange, object: nil)
+            }
         }
-        static let codeGutter = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        static let codeMeta = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)
+
+        static func code() -> NSFont { .monospacedSystemFont(ofSize: diffFontSize, weight: .regular) }
+        static var codeGutter: NSFont { .monospacedSystemFont(ofSize: max(8, diffFontSize - 2), weight: .regular) }
+        static var codeMeta: NSFont { .monospacedSystemFont(ofSize: max(8, diffFontSize - 1.5), weight: .medium) }
     }
 
     // MARK: - Color
@@ -93,6 +106,25 @@ enum Theme {
             }
         }
     }
+}
+
+// MARK: - Constraint builder helpers
+
+extension NSLayoutConstraint {
+    /// Sets a human-readable identifier so the constraint appears by name in the debugger
+    /// and Xcode's constraint-conflict log instead of as an opaque memory address.
+    @discardableResult func id(_ name: String) -> NSLayoutConstraint {
+        identifier = name; return self
+    }
+    /// Drops priority to `.defaultHigh` so an autoresizing-mask constraint imposed by
+    /// NSSplitView at startup can win without triggering unsatisfiable-constraint logs.
+    @discardableResult func h() -> NSLayoutConstraint {
+        priority = .defaultHigh; return self
+    }
+}
+
+extension Notification.Name {
+    static let diffFontSizeDidChange = Notification.Name("elemental.diffFontSizeDidChange")
 }
 
 /// Appearance-aware resolution helper for NSColor (used by custom-drawn cells).

@@ -28,7 +28,7 @@ final class AppCoordinator {
     private var workingCopyPresenters: [URL: WorkingCopyPresenter] = [:]
     private var watcherTasks: [URL: Task<Void, Never>] = [:]
     private var branchTasks: [URL: Task<Void, Never>] = [:]
-    private var activeRepoURL: URL?
+    private(set) var activeRepoURL: URL?
     /// Count of in-flight `addRepository` tasks. `start()` defers its fallback selection until
     /// all pending adds resolve so a CLI-supplied path wins over the last-known repo.
     private var pendingAddCount = 0
@@ -65,6 +65,12 @@ final class AppCoordinator {
     }
 
     // MARK: - Public API (called by AppDelegate)
+
+    func removeCurrentRepository() {
+        guard let url = activeRepoURL,
+              let repo = bookmarkStore.repositories.first(where: { $0.rootURL == url }) else { return }
+        removeRepo(repo)
+    }
 
     func addRepository(at url: URL) {
         pendingAddCount += 1

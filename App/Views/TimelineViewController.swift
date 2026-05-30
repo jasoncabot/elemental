@@ -109,26 +109,40 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         container.addSubview(emptyLabel)
 
         bannerHeight = dirtyBanner.heightAnchor.constraint(equalToConstant: 0)
+            .id("TimelineView.dirtyBanner.height")
         workingCopyHeight = workingCopyRow.heightAnchor.constraint(equalToConstant: 0)
+            .id("TimelineView.workingCopyRow.height")
 
         NSLayoutConstraint.activate([
-            dirtyBanner.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
-            dirtyBanner.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            dirtyBanner.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            dirtyBanner.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
+                .id("TimelineView.dirtyBanner.top"),
+            dirtyBanner.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("TimelineView.dirtyBanner.leading"),
+            dirtyBanner.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("TimelineView.dirtyBanner.trailing"),
             bannerHeight,
 
-            workingCopyRow.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor),
-            workingCopyRow.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            workingCopyRow.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            workingCopyRow.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor)
+                .id("TimelineView.workingCopyRow.top"),
+            workingCopyRow.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("TimelineView.workingCopyRow.leading"),
+            workingCopyRow.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("TimelineView.workingCopyRow.trailing"),
             workingCopyHeight,
 
-            scrollView.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor)
+                .id("TimelineView.scrollView.top"),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("TimelineView.scrollView.leading"),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("TimelineView.scrollView.trailing"),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+                .id("TimelineView.scrollView.bottom"),
 
-            emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor)
+                .id("TimelineView.emptyLabel.centerX"),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+                .id("TimelineView.emptyLabel.centerY"),
         ])
 
         view = container
@@ -432,17 +446,26 @@ private final class TimelineCellView: NSTableCellView {
         addSubview(pillStack)
 
         NSLayoutConstraint.activate([
-            subjectLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            subjectLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            subjectLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            subjectLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16)
+                .id("TimelineCell.subject.leading"),
+            subjectLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
+                .id("TimelineCell.subject.trailing"),
+            subjectLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9)
+                .id("TimelineCell.subject.top"),
 
-            metaLabel.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor),
-            metaLabel.trailingAnchor.constraint(equalTo: subjectLabel.trailingAnchor),
-            metaLabel.topAnchor.constraint(equalTo: subjectLabel.bottomAnchor, constant: 3),
+            metaLabel.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor)
+                .id("TimelineCell.meta.leading"),
+            metaLabel.trailingAnchor.constraint(equalTo: subjectLabel.trailingAnchor)
+                .id("TimelineCell.meta.trailing"),
+            metaLabel.topAnchor.constraint(equalTo: subjectLabel.bottomAnchor, constant: 3)
+                .id("TimelineCell.meta.top"),
 
-            pillStack.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor),
-            pillStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-            pillStack.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 6),
+            pillStack.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor)
+                .id("TimelineCell.pills.leading"),
+            pillStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
+                .id("TimelineCell.pills.trailing"),
+            pillStack.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 6)
+                .id("TimelineCell.pills.top"),
         ])
     }
 
@@ -523,8 +546,10 @@ final class DirtyBannerView: NSView {
 
         clipsToBounds = true
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12)
+                .id("DirtyBanner.stack.leading"),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("DirtyBanner.stack.centerY"),
         ])
     }
 }
@@ -566,22 +591,25 @@ private final class WorkingCopyRowView: NSView {
         // Vertical anchors are required — they don't participate in the zero-width chain.
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16)
-                .id("wc-icon-leading").h(),
-            icon.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+                .id("WorkingCopyRow.icon.leading").h(),
+            icon.topAnchor.constraint(equalTo: topAnchor, constant: 12)
+                .id("WorkingCopyRow.icon.top"),
             icon.widthAnchor.constraint(equalToConstant: 16)
-                .id("wc-icon-width").h(),
+                .id("WorkingCopyRow.icon.width").h(),
 
             titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8)
-                .id("wc-title-leading").h(),
+                .id("WorkingCopyRow.title.leading").h(),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
-                .id("wc-title-trailing").h(),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+                .id("WorkingCopyRow.title.trailing").h(),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10)
+                .id("WorkingCopyRow.title.top"),
 
             metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor)
-                .id("wc-meta-leading").h(),
+                .id("WorkingCopyRow.meta.leading").h(),
             metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
-                .id("wc-meta-trailing").h(),
-            metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
+                .id("WorkingCopyRow.meta.trailing").h(),
+            metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3)
+                .id("WorkingCopyRow.meta.top"),
         ])
     }
     @available(*, unavailable)
@@ -619,12 +647,3 @@ private final class WorkingCopyRowView: NSView {
     }
 }
 
-// MARK: - NSLayoutConstraint helpers
-
-private extension NSLayoutConstraint {
-    /// Sets the identifier so constraint-conflict logs print a name instead of a raw address.
-    @discardableResult func id(_ s: String) -> NSLayoutConstraint { identifier = s; return self }
-    /// Drops priority to .defaultHigh so the zero-width autoresizing-mask constraint from
-    /// NSSplitView can win at startup without triggering unsatisfiable-constraint logs.
-    @discardableResult func h() -> NSLayoutConstraint { priority = .defaultHigh; return self }
-}

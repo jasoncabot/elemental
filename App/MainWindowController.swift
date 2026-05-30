@@ -39,13 +39,16 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
         window.toolbar = toolbarController.toolbar
-        window.center()
-        window.setFrameAutosaveName("MainWindow")
         window.isRestorable = false
         window.tabbingMode = .disallowed
 
         super.init(window: window)
         buildLayout()
+
+        if !window.setFrameUsingName("MainWindow") {
+            window.center()
+        }
+        window.setFrameAutosaveName("MainWindow")
     }
 
     @available(*, unavailable)

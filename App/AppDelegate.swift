@@ -63,11 +63,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "Open Repository…",
                          action: #selector(openRepository(_:)),
                          keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Remove Repository",
+                         action: #selector(removeCurrentRepository(_:)),
+                         keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Install Command Line Tool…",
                          action: #selector(installCommandLineTool(_:)),
                          keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
+
+        // View menu
+        let viewMenuItem = NSMenuItem()
+        mainMenu.addItem(viewMenuItem)
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Increase Font Size",
+                         action: #selector(increaseDiffFontSize(_:)),
+                         keyEquivalent: "+")
+        viewMenu.addItem(withTitle: "Decrease Font Size",
+                         action: #selector(decreaseDiffFontSize(_:)),
+                         keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Reset Font Size",
+                         action: #selector(resetDiffFontSize(_:)),
+                         keyEquivalent: "0")
+        viewMenuItem.submenu = viewMenu
 
         NSApp.mainMenu = mainMenu
     }
@@ -111,6 +129,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.alertStyle = .warning
             alert.runModal()
         }
+    }
+
+    @objc private func removeCurrentRepository(_ sender: Any?) {
+        Task { @MainActor [weak self] in self?.coordinator?.removeCurrentRepository() }
+    }
+
+    @objc private func increaseDiffFontSize(_ sender: Any?) {
+        Theme.Font.diffFontSize += 1
+    }
+
+    @objc private func decreaseDiffFontSize(_ sender: Any?) {
+        Theme.Font.diffFontSize -= 1
+    }
+
+    @objc private func resetDiffFontSize(_ sender: Any?) {
+        Theme.Font.diffFontSize = Theme.Font.defaultDiffSize
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(removeCurrentRepository(_:)) {
+            return MainActor.assumeIsolated { self.coordinator?.activeRepoURL != nil }
+        }
+        if menuItem.action == #selector(increaseDiffFontSize(_:)) {
+            return Theme.Font.diffFontSize < Theme.Font.maxDiffSize
+        }
+        if menuItem.action == #selector(decreaseDiffFontSize(_:)) {
+            return Theme.Font.diffFontSize > Theme.Font.minDiffSize
+        }
+        return true
     }
 
     @objc private func openRepository(_ sender: Any?) {

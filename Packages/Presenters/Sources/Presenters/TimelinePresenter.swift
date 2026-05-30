@@ -158,13 +158,30 @@ public final class TimelinePresenter: Presenter {
 
     private func observeDiskChanges() {
         watchTask = Task { [weak self, watcher, repo] in
-            for await _ in watcher.events(for: repo) {
+            for await event in watcher.events(for: repo) {
                 guard let self else { return }
+                // Only mark dirty when the commit graph may have changed. Changes to
+                // `.git/index` (e.g. `git status` stat-refresh) don't affect history.
+                let isTimelineChange = event.changedPaths.contains { path in
+                    // The .git dir itself changing (e.g. repo deletion) is always relevant.
+                    // Use hasSuffix, not contains, so ".git/index" doesn't accidentally match.
+                    if path == ".git" || path.hasSuffix("/.git") { return true }
+                    return Self.timelineRelatedPaths.contains(where: {
+                        path.hasSuffix($0) || path.contains($0)
+                    })
+                }
+                guard isTimelineChange else { continue }
                 self.isDirty = true
                 self.notify()
             }
         }
     }
+
+    // Paths whose modification signals a potential commit-graph change.
+    // "HEAD" as a suffix catches ORIG_HEAD, MERGE_HEAD, CHERRY_PICK_HEAD, etc.
+    private static let timelineRelatedPaths: [String] = [
+        "HEAD", "refs/", "packed-refs", "logs/",
+    ]
 
     private func fetchTotalCount() {
         let q = CommitQuery(repo: repo, scope: query.scope)

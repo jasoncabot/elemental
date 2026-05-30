@@ -30,10 +30,14 @@ final class BadgeLabel: NSView {
         }
 
         NSLayoutConstraint.activate([
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: horizontalInset),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -horizontalInset),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 2)
+                .id("BadgeLabel.label.top"),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
+                .id("BadgeLabel.label.bottom"),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: horizontalInset)
+                .id("BadgeLabel.label.leading"),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -horizontalInset)
+                .id("BadgeLabel.label.trailing"),
         ])
     }
 

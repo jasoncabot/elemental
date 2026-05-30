@@ -120,16 +120,16 @@ extension WorkingCopyPresenter: DetailSource {
         var result: [DetailSection] = []
         if !stagedFiles.isEmpty {
             result.append(DetailSection(title: DetailArea.staged.sectionTitle, area: .staged,
-                                        files: analyzed(stagedFiles)))
+                                        files: organized(stagedFiles, mode: reviewMode)))
         }
         if !unstagedFiles.isEmpty {
             result.append(DetailSection(title: DetailArea.unstaged.sectionTitle, area: .unstaged,
-                                        files: analyzed(unstagedFiles)))
+                                        files: organized(unstagedFiles, mode: reviewMode)))
         }
         let untracked = (status?.untracked ?? []).map(Self.untrackedDiffFile)
         if !untracked.isEmpty {
             result.append(DetailSection(title: DetailArea.untracked.sectionTitle, area: .untracked,
-                                        files: analyzed(untracked)))
+                                        files: organized(untracked, mode: reviewMode)))
         }
         return result
     }
@@ -169,10 +169,24 @@ extension WorkingCopyPresenter: DetailSource {
 
     // MARK: helpers
 
-    private func analyzed(_ files: [DiffFile]) -> [FileAnalysis] {
-        files.map(FileAnalysis.analyze).sorted { a, b in
-            if a.isNoise != b.isNoise { return !a.isNoise }   // substantive changes first
-            return a.displayPath < b.displayPath
+    private func organized(_ files: [DiffFile], mode: ReviewMode) -> [FileAnalysis] {
+        let analyzed = files.map(FileAnalysis.analyze)
+        switch mode {
+        case .narrative:
+            return analyzed.sorted { a, b in
+                if a.isNoise != b.isNoise { return !a.isNoise }
+                return a.displayPath < b.displayPath
+            }
+        case .file:
+            return analyzed.sorted { $0.displayPath < $1.displayPath }
+        case .risk:
+            return analyzed.sorted { a, b in
+                if a.risk != b.risk { return a.risk > b.risk }
+                let aMag = a.file.additions + a.file.deletions
+                let bMag = b.file.additions + b.file.deletions
+                if aMag != bMag { return aMag > bMag }
+                return a.displayPath < b.displayPath
+            }
         }
     }
 

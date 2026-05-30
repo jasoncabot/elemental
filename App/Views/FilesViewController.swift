@@ -19,12 +19,17 @@ final class FilesViewController: NSViewController, PresenterObserving {
         didSet {
             oldValue?.removeObserver(self)
             source?.addObserver(self)
+            collapsedKeys.removeAll()
             rebuild()
         }
     }
 
     var reviewMode: ReviewMode = .narrative {
-        didSet { guard reviewMode != oldValue else { return }; rebuild() }
+        didSet {
+            guard reviewMode != oldValue else { return }
+            collapsedKeys.removeAll()
+            rebuild()
+        }
     }
 
     var filter: String = "" {
@@ -47,6 +52,9 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
     private var sections: [DetailSection] = []
     private var isUpdatingSelection = false
+    /// Keys of items the user has manually collapsed. Persists across rebuilds so that
+    /// changing the selected diff file doesn't reset expand/collapse state.
+    private var collapsedKeys: Set<String> = []
 
     // MARK: - Lifecycle
 
@@ -86,17 +94,26 @@ final class FilesViewController: NSViewController, PresenterObserving {
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            commitSummary.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor),
-            commitSummary.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            commitSummary.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            commitSummary.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
+                .id("FilesView.commitSummary.top"),
+            commitSummary.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("FilesView.commitSummary.leading"),
+            commitSummary.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("FilesView.commitSummary.trailing"),
 
-            scrollView.topAnchor.constraint(equalTo: commitSummary.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: commitSummary.bottomAnchor)
+                .id("FilesView.scrollView.top"),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("FilesView.scrollView.leading"),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("FilesView.scrollView.trailing"),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+                .id("FilesView.scrollView.bottom"),
 
-            emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor)
+                .id("FilesView.emptyLabel.centerX"),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+                .id("FilesView.emptyLabel.centerY"),
         ])
 
         view = container
@@ -134,12 +151,18 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
         outlineView.reloadData()
 
-        // Expand every group; for working-copy areas also expand their directory sub-groups.
+        // Expand groups and directory nodes, but honour any collapse state the user set.
         for section in sections {
-            outlineView.expandItem(boxed(section))
+            let sectionBox = boxed(section)
+            if !collapsedKeys.contains(collapseKey(for: sectionBox)) {
+                outlineView.expandItem(sectionBox)
+            }
             if let area = section.area {
                 for (dir, files) in dirGroups(in: section) {
-                    outlineView.expandItem(boxedDir(area: area, dir: dir, files: files))
+                    let dirBox = boxedDir(area: area, dir: dir, files: files)
+                    if !collapsedKeys.contains(collapseKey(for: dirBox)) {
+                        outlineView.expandItem(dirBox)
+                    }
                 }
             }
         }
@@ -153,9 +176,18 @@ final class FilesViewController: NSViewController, PresenterObserving {
             if let fa = section.files.first(where: { matches(selected, area: section.area, fa: $0) }) {
                 let row = outlineView.row(forItem: boxed(fa, area: section.area))
                 if row >= 0, outlineView.selectedRow != row {
+                    // If the row is already visible, preserve the scroll position — selectRowIndexes
+                    // can scroll the table even when the target row is on screen.
+                    let rowRect = outlineView.rect(ofRow: row)
+                    let alreadyVisible = outlineView.visibleRect.intersects(rowRect)
+                    let savedOrigin = scrollView.contentView.bounds.origin
                     isUpdatingSelection = true
                     outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                     isUpdatingSelection = false
+                    if alreadyVisible {
+                        scrollView.contentView.scroll(to: savedOrigin)
+                        scrollView.reflectScrolledClipView(scrollView.contentView)
+                    }
                 }
                 return
             }
@@ -209,6 +241,14 @@ final class FilesViewController: NSViewController, PresenterObserving {
         let key = boxKey(area, file.displayPath + ":" + file.file.id)
         if let b = fileBoxes[key] { return b }
         let b = Box(.file(area: area, file)); fileBoxes[key] = b; return b
+    }
+
+    private func collapseKey(for box: Box) -> String {
+        switch box.node {
+        case .group(let section): return boxKey(section.area, section.title ?? "")
+        case .dir(let area, let dir, _): return boxKey(area, "dir:\(dir)")
+        case .file: return ""
+        }
     }
 
     /// Groups files in a working-copy section by their directory, preserving insertion order.
@@ -327,6 +367,17 @@ extension FilesViewController: NSOutlineViewDelegate {
         }
     }
 
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard let box = notification.userInfo?["NSObject"] as? Box else { return }
+        let k = collapseKey(for: box)
+        if !k.isEmpty { collapsedKeys.insert(k) }
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard let box = notification.userInfo?["NSObject"] as? Box else { return }
+        collapsedKeys.remove(collapseKey(for: box))
+    }
+
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isUpdatingSelection else { return }
         let row = outlineView.selectedRow
@@ -366,18 +417,30 @@ private final class SubsystemHeaderView: NSTableCellView {
 
         addSubview(icon); addSubview(nameLabel); addSubview(countLabel); addSubview(riskDot)
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 14),
-            riskDot.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
-            riskDot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            riskDot.widthAnchor.constraint(equalToConstant: 6),
-            riskDot.heightAnchor.constraint(equalToConstant: 6),
-            nameLabel.leadingAnchor.constraint(equalTo: riskDot.trailingAnchor, constant: 6),
-            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            countLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 6),
-            countLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
+                .id("SubsystemHeader.icon.leading"),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("SubsystemHeader.icon.centerY"),
+            icon.widthAnchor.constraint(equalToConstant: 14)
+                .id("SubsystemHeader.icon.width"),
+            riskDot.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)
+                .id("SubsystemHeader.riskDot.leading"),
+            riskDot.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("SubsystemHeader.riskDot.centerY"),
+            riskDot.widthAnchor.constraint(equalToConstant: 6)
+                .id("SubsystemHeader.riskDot.width"),
+            riskDot.heightAnchor.constraint(equalToConstant: 6)
+                .id("SubsystemHeader.riskDot.height"),
+            nameLabel.leadingAnchor.constraint(equalTo: riskDot.trailingAnchor, constant: 6)
+                .id("SubsystemHeader.nameLabel.leading"),
+            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("SubsystemHeader.nameLabel.centerY"),
+            countLabel.leadingAnchor.constraint(greaterThanOrEqualTo: nameLabel.trailingAnchor, constant: 6)
+                .id("SubsystemHeader.countLabel.leading"),
+            countLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+                .id("SubsystemHeader.countLabel.trailing"),
+            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("SubsystemHeader.countLabel.centerY"),
         ])
     }
     @available(*, unavailable)
@@ -422,12 +485,18 @@ private final class DirRowView: NSTableCellView {
 
         addSubview(icon); addSubview(nameLabel)
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 13),
-            nameLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5),
-            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
+                .id("DirRow.icon.leading"),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("DirRow.icon.centerY"),
+            icon.widthAnchor.constraint(equalToConstant: 13)
+                .id("DirRow.icon.width"),
+            nameLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5)
+                .id("DirRow.nameLabel.leading"),
+            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("DirRow.nameLabel.centerY"),
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8)
+                .id("DirRow.nameLabel.trailing"),
         ])
     }
     @available(*, unavailable)
@@ -489,24 +558,39 @@ private final class FileRowView: NSTableCellView {
         addSubview(signalStack); addSubview(statLabel)
 
         NSLayoutConstraint.activate([
-            statusBar.leadingAnchor.constraint(equalTo: leadingAnchor),
-            statusBar.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            statusBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
-            statusBar.widthAnchor.constraint(equalToConstant: 3),
+            statusBar.leadingAnchor.constraint(equalTo: leadingAnchor)
+                .id("FileRow.statusBar.leading"),
+            statusBar.topAnchor.constraint(equalTo: topAnchor, constant: 4)
+                .id("FileRow.statusBar.top"),
+            statusBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+                .id("FileRow.statusBar.bottom"),
+            statusBar.widthAnchor.constraint(equalToConstant: 3)
+                .id("FileRow.statusBar.width"),
 
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
+                .id("FileRow.icon.leading"),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("FileRow.icon.centerY"),
+            icon.widthAnchor.constraint(equalToConstant: 16)
+                .id("FileRow.icon.width"),
 
-            nameRow.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
-            nameRow.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameRow.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6)
+                .id("FileRow.nameRow.leading"),
+            nameRow.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("FileRow.nameRow.centerY"),
 
-            signalStack.leadingAnchor.constraint(greaterThanOrEqualTo: nameRow.trailingAnchor, constant: 6),
-            signalStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statLabel.leadingAnchor.constraint(equalTo: signalStack.trailingAnchor, constant: 6),
-            statLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            statLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            statLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
+            signalStack.leadingAnchor.constraint(greaterThanOrEqualTo: nameRow.trailingAnchor, constant: 6)
+                .id("FileRow.signalStack.leading"),
+            signalStack.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("FileRow.signalStack.centerY"),
+            statLabel.leadingAnchor.constraint(equalTo: signalStack.trailingAnchor, constant: 6)
+                .id("FileRow.statLabel.leading"),
+            statLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+                .id("FileRow.statLabel.trailing"),
+            statLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("FileRow.statLabel.centerY"),
+            statLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56)
+                .id("FileRow.statLabel.minWidth"),
         ])
     }
     @available(*, unavailable)
@@ -611,10 +695,13 @@ private final class CommitSummaryView: NSView {
         stack.alignment = .leading
         stack.spacing = 3
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for label in [subjectLabel, metaLabel, bodyLabel, noteLabel, statsLabel] {
+        let labelNames = ["subject", "meta", "body", "note", "stats"]
+        for (label, name) in zip([subjectLabel, metaLabel, bodyLabel, noteLabel, statsLabel], labelNames) {
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             stack.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            label.widthAnchor.constraint(equalTo: stack.widthAnchor)
+                .id("CommitSummary.\(name).fillWidth")
+                .isActive = true
         }
 
         divider.boxType = .separator
@@ -623,13 +710,20 @@ private final class CommitSummaryView: NSView {
         addSubview(divider)
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset),
-            stack.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -10),
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor),
-            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10)
+                .id("CommitSummary.stack.top"),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset)
+                .id("CommitSummary.stack.leading"),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset)
+                .id("CommitSummary.stack.trailing"),
+            stack.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -10)
+                .id("CommitSummary.stack.bottom"),
+            divider.leadingAnchor.constraint(equalTo: leadingAnchor)
+                .id("CommitSummary.divider.leading"),
+            divider.trailingAnchor.constraint(equalTo: trailingAnchor)
+                .id("CommitSummary.divider.trailing"),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor)
+                .id("CommitSummary.divider.bottom"),
         ])
     }
 

@@ -39,6 +39,64 @@ final class PresenterTests: XCTestCase {
         XCTAssertEqual(presenter.commits.count, 2)
     }
 
+    // `git status` refreshes stat timestamps in .git/index without changing the commit
+    // graph. Firing an event for only the index must NOT mark the timeline dirty.
+    func testIndexStatRefreshDoesNotMarkDirty() async throws {
+        let backend = FakeBackend()
+        backend.commitsByScopeAll = [makeCommit("a")]
+        let watcher = FakeWatcher()
+        let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        watcher.fire(DirtyEvent(repo: repo(), changedPaths: ["/repo/.git/index"]))
+        await yieldToMainActor()
+        XCTAssertFalse(presenter.isDirty, "index stat-refresh must not show 'Repository changed on disk'")
+    }
+
+    func testIndexLockDoesNotMarkDirty() async throws {
+        let backend = FakeBackend()
+        backend.commitsByScopeAll = [makeCommit("a")]
+        let watcher = FakeWatcher()
+        let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        watcher.fire(DirtyEvent(repo: repo(), changedPaths: ["/repo/.git/index.lock"]))
+        await yieldToMainActor()
+        XCTAssertFalse(presenter.isDirty)
+    }
+
+    // Ref changes (branch switch, new commit, fetch) must still mark dirty.
+    func testRefChangeMarksDirty() async throws {
+        let backend = FakeBackend()
+        backend.commitsByScopeAll = [makeCommit("a")]
+        let watcher = FakeWatcher()
+        let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        watcher.fire(DirtyEvent(repo: repo(), changedPaths: ["/repo/.git/refs/heads/main"]))
+        await awaitCondition(on: presenter) { presenter.isDirty }
+    }
+
+    // An event containing both an index path and a HEAD path must still mark dirty
+    // (the HEAD path wins; the index path is simply ignored).
+    func testMixedEventWithIndexAndHEADMarksDirty() async throws {
+        let backend = FakeBackend()
+        backend.commitsByScopeAll = [makeCommit("a")]
+        let watcher = FakeWatcher()
+        let presenter = TimelinePresenter(backend: backend, watcher: watcher, repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        watcher.fire(DirtyEvent(repo: repo(), changedPaths: [
+            "/repo/.git/index",
+            "/repo/.git/HEAD",
+        ]))
+        await awaitCondition(on: presenter) { presenter.isDirty }
+    }
+
     func testRefreshPreservesSelectionWhenShaSurvives() async throws {
         let backend = FakeBackend()
         backend.commitsByScopeAll = [makeCommit("b"), makeCommit("a")]

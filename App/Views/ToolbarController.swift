@@ -60,7 +60,9 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         // clip). A bare upper bound lets the label shrink to nothing when there's no branch and
         // cap+truncate at 200 when names are long.
         branchLabel.translatesAutoresizingMaskIntoConstraints = false
-        branchLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
+        branchLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 200)
+            .id("ToolbarController.branchLabel.maxWidth")
+            .isActive = true
 
         modeControl.target = self
         modeControl.action = #selector(modeChanged)
