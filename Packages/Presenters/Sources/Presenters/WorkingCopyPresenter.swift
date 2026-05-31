@@ -38,6 +38,9 @@ public final class WorkingCopyPresenter: Presenter {
     /// Inline vs side-by-side rendering for the diff pane. Shared shape with `CommitDetailPresenter`
     /// so a single header toggle drives whichever detail source is active.
     public var mode: CommitDetailPresenter.Mode = .unified
+    /// Standard vs whole-file context. Changing it refetches the staged/unstaged (and any
+    /// selected untracked) diffs, since git emits different hunks.
+    public private(set) var diffContext: DiffContext = .standard
     public var repoRootURL: URL { repo.rootURL }
 
     public var status: WorkingCopyStatus? { statusState.value }
@@ -102,6 +105,18 @@ public final class WorkingCopyPresenter: Presenter {
         guard mode != self.mode else { return }
         self.mode = mode
         notify()
+    }
+
+    /// Switch between standard and whole-file context. Refetches the tree diffs so git re-emits
+    /// hunks with the requested context.
+    public func setDiffContext(_ context: DiffContext) {
+        guard context != diffContext else { return }
+        diffContext = context
+        loadStaged()
+        loadUnstaged()
+        if case .workingUntracked(let path)? = selectedArea {
+            loadUntracked(path: path)
+        }
     }
 
     /// Select a file in a specific area. Staged/unstaged diffs are already loaded eagerly; only an
@@ -174,10 +189,10 @@ public final class WorkingCopyPresenter: Presenter {
         stagedTask?.cancel()
         stagedState = .loading
         notify()
-        stagedTask = Task { [weak self, backend, repo] in
+        stagedTask = Task { [weak self, backend, repo, context = diffContext] in
             guard let self else { return }
             do {
-                let result = try await backend.diff(.workingStaged, in: repo)
+                let result = try await backend.diff(.workingStaged, context: context, in: repo)
                 if Task.isCancelled { return }
                 self.stagedState = .loaded(result)
             } catch is CancellationError { return }
@@ -190,10 +205,10 @@ public final class WorkingCopyPresenter: Presenter {
         unstagedTask?.cancel()
         unstagedState = .loading
         notify()
-        unstagedTask = Task { [weak self, backend, repo] in
+        unstagedTask = Task { [weak self, backend, repo, context = diffContext] in
             guard let self else { return }
             do {
-                let result = try await backend.diff(.workingUnstaged, in: repo)
+                let result = try await backend.diff(.workingUnstaged, context: context, in: repo)
                 if Task.isCancelled { return }
                 self.unstagedState = .loaded(result)
             } catch is CancellationError { return }
@@ -206,10 +221,10 @@ public final class WorkingCopyPresenter: Presenter {
         untrackedTask?.cancel()
         untrackedState = .loading
         notify()
-        untrackedTask = Task { [weak self, backend, repo] in
+        untrackedTask = Task { [weak self, backend, repo, context = diffContext] in
             guard let self else { return }
             do {
-                let result = try await backend.diff(.workingUntracked(path), in: repo)
+                let result = try await backend.diff(.workingUntracked(path), context: context, in: repo)
                 if Task.isCancelled { return }
                 // Ignore a stale load if the selection moved on while this was in flight.
                 guard case .workingUntracked(path)? = self.selectedArea else { return }

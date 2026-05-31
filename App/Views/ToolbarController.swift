@@ -128,6 +128,14 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         ReviewMode(rawValue: modeControl.selectedSegment) ?? .narrative
     }
 
+    /// Programmatically select a review mode (e.g. from a ⌘1/2/3 menu command) and notify the
+    /// delegate, matching what a click on the segmented control would do.
+    func selectMode(_ mode: ReviewMode) {
+        guard modeControl.selectedSegment != mode.rawValue else { return }
+        modeControl.selectedSegment = mode.rawValue
+        delegate?.toolbarDidChangeReviewMode(mode)
+    }
+
     // MARK: - Actions
 
     @objc private func repoButtonClicked(_ sender: NSButton) {
@@ -150,6 +158,10 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
 
     @objc private func sidebarToggleClicked() {
         delegate?.toolbarDidToggleSidebar()
+    }
+
+    func focusSearch() {
+        searchItem?.beginSearchInteraction()
     }
 
     // MARK: - NSToolbarDelegate

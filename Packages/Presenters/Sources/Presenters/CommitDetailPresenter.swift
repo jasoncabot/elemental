@@ -27,6 +27,7 @@ public final class CommitDetailPresenter: Presenter {
     public private(set) var filesState: Loadable<[DiffFile]> = .idle
     public private(set) var selectedFile: DiffFile.ID?
     public private(set) var mode: Mode = .unified
+    public private(set) var diffContext: DiffContext = .standard
 
     public var repoRootURL: URL { repo.rootURL }
     public var files: [DiffFile] { filesState.value ?? [] }
@@ -53,7 +54,7 @@ public final class CommitDetailPresenter: Presenter {
         }
         commitNote = .loading
         fetchNote(for: commit.sha)
-        if let cached = cache[commit.sha] {
+        if let cached = cache[cacheKey(commit.sha)] {
             filesState = .loaded(cached)
             selectedFile = cached.first?.id
             notify()
@@ -84,26 +85,50 @@ public final class CommitDetailPresenter: Presenter {
         notify()
     }
 
-    private func load(_ commit: Commit) {
+    /// Switch between standard and whole-file context. Unlike `setMode`, this needs a refetch
+    /// (git emits different hunks), so it preserves the current selection and reloads.
+    public func setDiffContext(_ context: DiffContext) {
+        guard context != diffContext else { return }
+        diffContext = context
+        guard let commit else { notify(); return }
+        let keepSelection = selectedFile
+        if let cached = cache[cacheKey(commit.sha)] {
+            filesState = .loaded(cached)
+            selectedFile = cached.contains(where: { $0.id == keepSelection }) ? keepSelection
+                                                                              : cached.first?.id
+            notify()
+            return
+        }
+        load(commit, keepSelection: keepSelection)
+    }
+
+    private func cacheKey(_ sha: String) -> String {
+        "\(sha)#\(diffContext == .wholeFile ? "full" : "std")"
+    }
+
+    private func load(_ commit: Commit, keepSelection: DiffFile.ID? = nil) {
         let sha = commit.sha
         // Merge commits produce an empty "combined diff" via git show; diff against
         // the first parent instead to show what the merge actually brought in.
         let range: DiffRange = commit.isMerge && !commit.parents.isEmpty
             ? .between(commit.parents[0], sha)
             : .commit(sha)
+        let context = diffContext
+        let key = cacheKey(sha)
 
         loadTask?.cancel()
         filesState = .loading
         notify()
-        loadTask = Task { [weak self, backend, repo, sha, range] in
+        loadTask = Task { [weak self, backend, repo, sha, range, context, key] in
             guard let self else { return }
             do {
-                let result = try await backend.diff(range, in: repo)
+                let result = try await backend.diff(range, context: context, in: repo)
                 if Task.isCancelled { return }
-                self.cache[sha] = result
+                self.cache[key] = result
                 guard self.sha == sha else { return }
                 self.filesState = .loaded(result)
-                self.selectedFile = result.first?.id
+                self.selectedFile = result.contains(where: { $0.id == keepSelection })
+                    ? keepSelection : result.first?.id
                 self.notify()
             } catch is CancellationError {
                 return

@@ -92,7 +92,7 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
                            branches: [], remotes: [], tags: [])
     }
 
-    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
+    func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile] {
         lock.lock()
         _diffCallCount += 1
         lock.unlock()

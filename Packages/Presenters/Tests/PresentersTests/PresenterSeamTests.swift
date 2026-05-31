@@ -245,7 +245,7 @@ final class PageCapturingBackend: GitBackend, @unchecked Sendable {
         RefSnapshot(head: .detached(sha: ""), branches: [], remotes: [], tags: [])
     }
     func commitCount(_ query: CommitQuery) async throws -> Int { allCommits.count }
-    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] { [] }
+    func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile] { [] }
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus {
         WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,
                           staged: [], unstaged: [], untracked: [], conflicts: [])

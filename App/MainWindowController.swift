@@ -74,10 +74,18 @@ final class MainWindowController: NSWindowController {
 
         let filesItem = NSSplitViewItem(viewController: filesVC)
         filesItem.minimumThickness = 240
-        filesItem.preferredThicknessFraction = 0.22
+        filesItem.maximumThickness = 480
 
         let diffItem = NSSplitViewItem(viewController: diffVC)
         diffItem.minimumThickness = 360
+
+        // Holding priority decides which pane yields when the split relayouts (e.g. after a file
+        // selection rebuilds diff content). The pane with the *lowest* priority resizes first; we
+        // want only the diff pane to flex, so the timeline and files dividers stay put rather than
+        // drifting toward whatever content width the panes momentarily report.
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(262)
+        filesItem.holdingPriority = NSLayoutConstraint.Priority(261)
+        diffItem.holdingPriority = NSLayoutConstraint.Priority(260)
 
         splitVC.addSplitViewItem(sidebarItem)
         splitVC.addSplitViewItem(filesItem)
@@ -94,6 +102,18 @@ final class MainWindowController: NSWindowController {
             ctx.allowsImplicitAnimation = true
             sidebarItem.animator().isCollapsed = !sidebarItem.isCollapsed
         }
+    }
+
+    func focusSearch() {
+        toolbarController.focusSearch()
+    }
+
+    func selectReviewMode(_ mode: ReviewMode) {
+        toolbarController.selectMode(mode)
+    }
+
+    var currentReviewMode: ReviewMode {
+        toolbarController.reviewMode
     }
 }
 

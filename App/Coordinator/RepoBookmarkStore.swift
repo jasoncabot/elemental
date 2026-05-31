@@ -30,15 +30,18 @@ final class RepoBookmarkStore {
     // MARK: - Launch restoration
 
     /// Resolves saved bookmarks, opens each repo, and populates `repositories`.
-    /// Missing/moved folders are skipped — never crashes.
+    /// Missing/moved folders are skipped — never crashes. Duplicate rootURLs (which
+    /// can accumulate via symlinks or past bugs) are culled and the file is rewritten.
     func restoreOnLaunch() async {
         let saved = loadBookmarks()
         var resolved: [Repository] = []
         var fresh: [Data] = []
+        var seen: Set<URL> = []
         for data in saved {
             var isStale = false
             guard let url = resolveBookmark(data, isStale: &isStale) else { continue }
             guard let repo = try? await backend.openRepository(at: url) else { continue }
+            guard seen.insert(repo.rootURL).inserted else { continue }
             resolved.append(repo)
             // Re-create bookmark from the resolved URL so moved folders stay tracked.
             fresh.append(isStale ? (makeBookmark(for: url) ?? data) : data)

@@ -40,6 +40,22 @@ public enum DiffRange: Sendable {
     case between(String, String)
 }
 
+/// How many unchanged lines to show around each change. `standard` is git's default 3 lines;
+/// `wholeFile` asks git for enough context that the entire file is shown around the changes.
+public enum DiffContext: Sendable, Equatable {
+    case standard
+    case wholeFile
+
+    /// The `--unified=<n>` value to pass to git. A very large number is clamped by git to the
+    /// file length, so the whole file is emitted as one hunk.
+    public var unifiedLines: Int {
+        switch self {
+        case .standard:  return 3
+        case .wholeFile: return 1_000_000_000
+        }
+    }
+}
+
 public enum GitError: Error, Sendable {
     case gitNotFound
     case notARepository(URL)
@@ -59,7 +75,7 @@ public protocol GitBackend: Sendable {
     /// its "exact match" leg, letting git decide what is a real ref/object instead of guessing.
     func resolveCommit(_ rev: String, in repo: Repository) async throws -> String?
     func refs(for repo: Repository) async throws -> RefSnapshot
-    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile]
+    func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile]
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus
     func blob(at path: String, rev: String, in repo: Repository) async throws -> Data
     /// The git note attached to a commit (`refs/notes/commits`), or nil if it has none.
@@ -72,6 +88,12 @@ public protocol GitBackend: Sendable {
 }
 
 public extension GitBackend {
+    /// Convenience for the common case of git's default context. Forwards to the context-aware
+    /// requirement so existing callers (and test fakes) need not pass `.standard` explicitly.
+    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
+        try await diff(range, context: .standard, in: repo)
+    }
+
     /// Default for backends without revision resolution (e.g. test fakes): no exact match.
     func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? { nil }
     /// Default for backends without note support (e.g. test fakes): no note.

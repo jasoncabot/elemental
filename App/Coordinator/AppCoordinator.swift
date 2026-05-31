@@ -72,6 +72,19 @@ final class AppCoordinator {
         removeRepo(repo)
     }
 
+    /// Re-reads the active repo from disk — same effect as the dirty banner's Refresh button.
+    /// Used by the ⌘R menu command.
+    func refreshActiveRepo() {
+        guard let url = activeRepoURL else { return }
+        timelinePresenters[url]?.refresh()
+        workingCopyPresenters[url]?.refresh()
+    }
+
+    /// Expands the timeline sidebar if it is collapsed, otherwise toggles it. Used by ⌘B.
+    func toggleSidebar() {
+        windowController.toggleTimeline()
+    }
+
     func addRepository(at url: URL) {
         pendingAddCount += 1
         Task {
@@ -284,9 +297,9 @@ extension AppCoordinator: TimelineViewControllerDelegate {
     }
 
     func timelineViewControllerDidRequestRefresh(_ vc: TimelineViewController) {
-        vc.presenter?.refresh()
-        // Refresh the working copy too, so its row counts and diffs reflect the new on-disk state.
-        if let url = activeRepoURL { workingCopyPresenters[url]?.refresh() }
+        // Refresh the timeline and the working copy together, so row counts and diffs reflect
+        // the new on-disk state.
+        refreshActiveRepo()
     }
 }
 

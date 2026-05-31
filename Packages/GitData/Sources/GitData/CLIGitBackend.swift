@@ -191,23 +191,25 @@ public actor CLIGitBackend: GitBackend {
         "--src-prefix=a/", "--dst-prefix=b/",
     ]
 
-    public func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
+    public func diff(_ range: DiffRange, context: DiffContext,
+                     in repo: Repository) async throws -> [DiffFile] {
+        let format = Self.diffFormatFlags + ["--unified=\(context.unifiedLines)"]
         var args: [String]
         switch range {
         case .workingUnstaged:
             // Worktree vs index. Plumbing equivalent of `git diff` (no args).
-            args = ["diff-files"] + Self.diffFormatFlags
+            args = ["diff-files"] + format
         case .workingStaged:
             // Index vs HEAD. Plumbing equivalent of `git diff --cached`. On an unborn branch
             // there is no HEAD, so compare against the (object-format-correct) empty tree.
             let base = try await stagedComparisonBase(in: repo)
-            args = ["diff-index", "--cached"] + Self.diffFormatFlags + [base]
+            args = ["diff-index", "--cached"] + format + [base]
         case .workingUntracked(let path):
             // Untracked files are absent from the index, so no tree-diff sees them. `--no-index`
             // compares /dev/null against the worktree file to render the whole file as additions.
             // It exits 1 when the files differ (the normal case here), so this path can't use
             // `runChecked`; it's handled below with explicit exit-code tolerance.
-            return try await untrackedDiff(path: path, in: repo)
+            return try await untrackedDiff(path: path, context: context, in: repo)
         case .commit(let sha):
             // Commit vs parent. Plumbing equivalent of `git show`:
             //   --no-commit-id  suppress the leading `<sha>` line diff-tree prints.
@@ -217,10 +219,10 @@ public actor CLIGitBackend: GitBackend {
             //                      (git show defaults to --cc, which the parser can't read and
             //                      which is empty for conflict-free merges).
             args = ["diff-tree", "--no-commit-id", "-r", "--root", "-m", "--first-parent"]
-                + Self.diffFormatFlags + [sha]
+                + format + [sha]
         case .between(let a, let b):
             // Tree a vs tree b. Plumbing equivalent of `git diff a..b` (which diffs endpoints).
-            args = ["diff-tree", "--no-commit-id", "-r"] + Self.diffFormatFlags + [a, b]
+            args = ["diff-tree", "--no-commit-id", "-r"] + format + [a, b]
         }
         let data = try await runner.runChecked(args, in: repo.rootURL)
         // Single chokepoint: parse raw patch, then classify churn (whitespace/moves) for the UI.
@@ -230,8 +232,10 @@ public actor CLIGitBackend: GitBackend {
     /// Render an untracked file's full contents as an all-additions diff via `git diff --no-index`.
     /// `--no-index` returns exit code 1 when the inputs differ — which is always the case here
     /// (empty vs file) — so a non-zero exit is expected; only treat ≥2 (git error) as failure.
-    private func untrackedDiff(path: String, in repo: Repository) async throws -> [DiffFile] {
-        let args = ["diff", "--no-index"] + Self.diffFormatFlags + ["--", "/dev/null", path]
+    private func untrackedDiff(path: String, context: DiffContext,
+                               in repo: Repository) async throws -> [DiffFile] {
+        let args = ["diff", "--no-index"] + Self.diffFormatFlags
+            + ["--unified=\(context.unifiedLines)", "--", "/dev/null", path]
         let result = try await runner.run(args, in: repo.rootURL)
         guard result.exitCode <= 1 else {
             throw GitError.commandFailed(command: "git " + args.joined(separator: " "),

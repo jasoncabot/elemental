@@ -63,6 +63,9 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     private let searchBanner = SearchBannerView()
     private let workingCopyRow = WorkingCopyRowView()
     private var workingCopyHeight: NSLayoutConstraint!
+    /// A subtle downward shadow under the pinned working-copy row, so it reads as floating above
+    /// the scrolling commit list. Visible only while the row itself is shown.
+    private let workingCopyShadow = TopEdgeShadowView()
     private let emptyLabel = NSTextField(labelWithString: "Drop a repository folder here")
     private var isUpdatingSelection = false
     private var lastReportedSHA: String? = nil
@@ -88,9 +91,12 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         tableView.backgroundColor = .clear
         tableView.rowHeight = Theme.Metric.timelineRowHeight
         tableView.focusRingType = .none
-        tableView.intercellSpacing = NSSize(width: 0, height: 4)
+        tableView.intercellSpacing = NSSize(width: 0, height: 6)
         tableView.selectionHighlightStyle = .regular
-        tableView.style = .inset
+        // .plain (not .inset): the card's visual inset is drawn by the cell's cardLayer, and .inset
+        // would additionally narrow the cell below tableView.bounds.width — breaking the expanded
+        // row-height measurement (which measures against bounds.width) so text overflows the row.
+        tableView.style = .plain
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onNavigate = { [weak self] delta in self?.move(by: delta) }
@@ -126,7 +132,11 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         searchBanner.translatesAutoresizingMaskIntoConstraints = false
         workingCopyRow.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        workingCopyShadow.translatesAutoresizingMaskIntoConstraints = false
+        workingCopyShadow.isHidden = true
         container.addSubview(scrollView)
+        // Shadow sits above the scroll content but below the working-copy card.
+        container.addSubview(workingCopyShadow)
         container.addSubview(dirtyBanner)
         container.addSubview(searchBanner)
         container.addSubview(workingCopyRow)
@@ -164,7 +174,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
                 .id("TimelineView.workingCopyRow.trailing"),
             workingCopyHeight,
 
-            scrollView.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor)
+            scrollView.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor, constant: 6)
                 .id("TimelineView.scrollView.top"),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor)
                 .id("TimelineView.scrollView.leading"),
@@ -172,6 +182,15 @@ final class TimelineViewController: NSViewController, PresenterObserving {
                 .id("TimelineView.scrollView.trailing"),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
                 .id("TimelineView.scrollView.bottom"),
+
+            workingCopyShadow.topAnchor.constraint(equalTo: workingCopyRow.bottomAnchor, constant: 6)
+                .id("TimelineView.workingCopyShadow.top"),
+            workingCopyShadow.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("TimelineView.workingCopyShadow.leading"),
+            workingCopyShadow.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("TimelineView.workingCopyShadow.trailing"),
+            workingCopyShadow.heightAnchor.constraint(equalToConstant: 6)
+                .id("TimelineView.workingCopyShadow.height"),
 
             emptyLabel.centerXAnchor.constraint(equalTo: container.centerXAnchor)
                 .id("TimelineView.emptyLabel.centerX"),
@@ -304,11 +323,13 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         // The working copy isn't a commit and can't be a search hit — hide it while searching.
         if presenter?.isSearchActive == true {
             workingCopyRow.isHidden = true
+            workingCopyShadow.isHidden = true
             workingCopyHeight.constant = 0
             return
         }
         guard let wc = workingCopyPresenter else {
             workingCopyRow.isHidden = true
+            workingCopyShadow.isHidden = true
             workingCopyHeight.constant = 0
             if workingCopySelected {
                 workingCopySelected = false
@@ -323,6 +344,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         guard !wc.isLoadingStatus else { return }
         guard let status = wc.status, !status.isClean else {
             workingCopyRow.isHidden = true
+            workingCopyShadow.isHidden = true
             workingCopyHeight.constant = 0
             // The working copy went clean while it was being reviewed — fall back to the commit.
             if workingCopySelected {
@@ -334,6 +356,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
             return
         }
         workingCopyRow.isHidden = false
+        workingCopyShadow.isHidden = false
         workingCopyHeight.constant = 64
         workingCopyRow.configure(staged: status.staged.count, unstaged: status.unstaged.count,
                                  untracked: status.untracked.count, conflicts: status.conflicts.count,
@@ -474,6 +497,14 @@ private final class TimelineTableView: NSTableView {
         switch event.charactersIgnoringModifiers {
         case "j": onNavigate?(1); return
         case "k": onNavigate?(-1); return
+        case " ":
+            // Space toggles expand on the selected commit cell if it has a "more" affordance.
+            let row = selectedRow
+            guard row >= 0 else { break }
+            if let cell = view(atColumn: 0, row: row, makeIfNecessary: false) as? TimelineCellView {
+                cell.toggleExpandIfPossible()
+                return
+            }
         default: break
         }
         super.keyDown(with: event)
@@ -491,32 +522,121 @@ private final class TimelineTableView: NSTableView {
     }
 }
 
-// MARK: - Row view (rounded selection)
+// MARK: - Row view (gradient selection glow)
 
 @objc(TimelineRowView)
 private final class TimelineRowView: NSTableRowView {
-    override func drawSelection(in dirtyRect: NSRect) {
-        guard isSelected else { return }
-        let inset = bounds.insetBy(dx: 6, dy: 1)
-        let path = NSBezierPath(roundedRect: inset, xRadius: Theme.Metric.cornerRadius, yRadius: Theme.Metric.cornerRadius)
-        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).setFill()
-        path.fill()
+    // Selection is rendered entirely by the cell's cardLayer so it is guaranteed to align
+    // with the glass border. Suppress the row-level highlight completely.
+    override func drawSelection(in dirtyRect: NSRect) {}
+
+    // Drive the cell's selection styling from the row view rather than backgroundStyle: an
+    // unfocused selected row reports backgroundStyle .normal (same as unselected), which would
+    // make the selection vanish when focus moves to another pane. isSelected/isEmphasized stay
+    // accurate regardless of which pane holds first responder.
+    override var isSelected: Bool { didSet { propagateSelection() } }
+    override var isEmphasized: Bool { didSet { propagateSelection() } }
+
+    // Reused row/cell views may already hold the target selection state, so didSet won't fire —
+    // apply the current state whenever a cell is (re)placed into this row.
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        if let cell = subview as? TimelineCellView {
+            cell.applySelectionState(selected: isSelected, emphasized: isEmphasized)
+        }
+    }
+
+    private func propagateSelection() {
+        for case let cell as TimelineCellView in subviews {
+            cell.applySelectionState(selected: isSelected, emphasized: isEmphasized)
+        }
+    }
+}
+
+// MARK: - More control
+
+// NSButton fights contentTintColor and attributedTitle in selection contexts, so replace it
+// with a minimal NSView: NSTextField + NSImageView give direct, reliable color control.
+private final class MoreControl: NSView {
+    var action: (() -> Void)?
+
+    private let label = NSTextField(labelWithString: "")
+    private let chevron = NSImageView()
+
+    var tintColor: NSColor = .tertiaryLabelColor {
+        didSet {
+            label.textColor = tintColor
+            chevron.contentTintColor = tintColor
+        }
+    }
+
+    var title: String = "" { didSet { label.stringValue = title } }
+
+    var image: NSImage? {
+        didSet {
+            // Template so the chevron honours contentTintColor and matches the label colour;
+            // otherwise the caret can render in a default shade that mismatches the "more" text.
+            image?.isTemplate = true
+            chevron.image = image
+        }
+    }
+
+    var symbolConfiguration: NSImage.SymbolConfiguration? {
+        didSet { chevron.symbolConfiguration = symbolConfiguration }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        label.font = Theme.Font.caption
+        label.textColor = .tertiaryLabelColor
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        chevron.contentTintColor = .tertiaryLabelColor
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [label, chevron])
+        stack.spacing = 2
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseDown(with event: NSEvent) { action?() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    // The inner label/chevron would otherwise swallow the click; claim the whole control's area so
+    // a click anywhere on "more"/"less" toggles expansion (previously only Space worked).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(convert(point, from: superview)) ? self : nil
     }
 }
 
 // MARK: - Cell view
 
-/// A chat-style commit row. Collapsed it shows an author glyph, a two-line subject, and a quiet
-/// metadata line with ref pills. When the commit has a body (or a subject that overflows), a "more"
-/// control expands the row in place to reveal the full subject and body.
+/// A chat-style commit row. Collapsed it shows a two-line subject and a quiet metadata line with
+/// ref pills and a faint SHA fingerprint. A coloured accent bar on the left edge signals the most
+/// prominent ref (HEAD, tag, branch). When the commit has more to say, "more" expands the row in
+/// place to reveal the full subject and body.
 @objc(TimelineCellView)
 private final class TimelineCellView: NSTableCellView {
     // Layout metrics (shared with `expandedHeight` so measurement matches the live layout).
-    fileprivate static let textLeading: CGFloat = 14
+    fileprivate static let textLeading: CGFloat = 20
     fileprivate static let trailing: CGFloat = 14
-    fileprivate static let topInset: CGFloat = 12
-    fileprivate static let bottomInset: CGFloat = 12
-    fileprivate static let vSpacing: CGFloat = 5
+    fileprivate static let topInset: CGFloat = 13
+    fileprivate static let bottomInset: CGFloat = 13
+    fileprivate static let vSpacing: CGFloat = 6
     fileprivate static let metaRowHeight: CGFloat = 18
 
     var onToggleExpand: (() -> Void)?
@@ -524,16 +644,48 @@ private final class TimelineCellView: NSTableCellView {
     private let subjectLabel = NSTextField(labelWithString: "")
     private let bodyLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
+    private let shaLabel = NSTextField(labelWithString: "")
     private let pillStack = NSStackView()
-    private let moreButton = NSButton()
+    private let moreButton = MoreControl()
     private let metaRow = NSStackView()
     private let vStack = NSStackView()
 
+    // Glass card backing layer and left-edge accent bar.
+    private let cardLayer = CALayer()
+    private let accentBarLayer = CALayer()
+    private var accentColor: NSColor?
+
     private var expanded = false
+
+    // Selection state, set by the enclosing row view. `focused` means the timeline owns the
+    // first responder in the key window (vivid accent); `selected` without `focused` is a quiet
+    // accent border so the chosen commit stays obvious when another pane is active.
+    private var rowSelected = false
+    private var rowEmphasized = false
+
+    func applySelectionState(selected: Bool, emphasized: Bool) {
+        rowSelected = selected
+        rowEmphasized = emphasized
+        updateLayer()
+        updateTextColors()
+    }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+
+        wantsLayer = true
+
+        // Card layer sits behind all subviews and provides the frosted-glass card feel.
+        cardLayer.cornerRadius = 10
+        cardLayer.cornerCurve = .continuous
+        cardLayer.borderWidth = 0.5
+        layer?.addSublayer(cardLayer)
+
+        // Thin rounded bar on the leading edge — coloured when a notable ref is present.
+        accentBarLayer.cornerRadius = 1.5
+        accentBarLayer.isHidden = true
+        layer?.addSublayer(accentBarLayer)
 
         subjectLabel.font = Theme.Font.subject()
         subjectLabel.textColor = .labelColor
@@ -554,19 +706,18 @@ private final class TimelineCellView: NSTableCellView {
         metaLabel.lineBreakMode = .byTruncatingTail
         metaLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // Faint monospaced SHA fingerprint — a sophisticated detail at the far right of the meta row.
+        shaLabel.font = .monospacedSystemFont(ofSize: 9.5, weight: .regular)
+        shaLabel.textColor = .quaternaryLabelColor
+        shaLabel.lineBreakMode = .byTruncatingTail
+        shaLabel.setContentHuggingPriority(.required, for: .horizontal)
+
         pillStack.orientation = .horizontal
-        pillStack.spacing = 6
+        pillStack.spacing = 5
         pillStack.alignment = .centerY
         pillStack.setContentHuggingPriority(.required, for: .horizontal)
 
-        moreButton.bezelStyle = .inline
-        moreButton.isBordered = false
-        moreButton.font = Theme.Font.caption
-        moreButton.imagePosition = .imageTrailing
-        moreButton.contentTintColor = .tertiaryLabelColor
-        moreButton.target = self
-        moreButton.action = #selector(moreClicked)
-        moreButton.setContentHuggingPriority(.required, for: .horizontal)
+        moreButton.action = { [weak self] in self?.moreClicked() }
 
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
@@ -580,6 +731,7 @@ private final class TimelineCellView: NSTableCellView {
         metaRow.addArrangedSubview(pillStack)
         metaRow.addArrangedSubview(metaLabel)
         metaRow.addArrangedSubview(spacer)
+        metaRow.addArrangedSubview(shaLabel)
         metaRow.addArrangedSubview(moreButton)
 
         vStack.orientation = .vertical
@@ -614,8 +766,27 @@ private final class TimelineCellView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Called by the table when space is pressed on the selected row.
+    func toggleExpandIfPossible() {
+        guard !moreButton.isHidden else { return }
+        onToggleExpand?()
+    }
+
     override func layout() {
         super.layout()
+        let w = bounds.width
+        let h = bounds.height
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Floating card: 8pt horizontal inset gives clear breathing room from the sidebar edge.
+        cardLayer.frame = CGRect(x: 8, y: 2, width: max(0, w - 16), height: max(0, h - 4))
+        // Accent bar: 3pt wide, sits just inside the card's left edge.
+        let barPad: CGFloat = 15
+        let barH = max(0, h - barPad * 2)
+        accentBarLayer.frame = CGRect(x: 13, y: barPad, width: 3, height: barH)
+        CATransaction.commit()
+
         // Multiline labels need an explicit wrapping width to report the right height.
         let width = vStack.bounds.width
         if width > 0 {
@@ -624,7 +795,87 @@ private final class TimelineCellView: NSTableCellView {
         }
     }
 
-    @objc private func moreClicked() { onToggleExpand?() }
+    override func updateLayer() {
+        super.updateLayer()
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let focused = rowSelected && rowEmphasized
+        let selected = rowSelected
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        let accent = NSColor.controlAccentColor
+        if focused {
+            cardLayer.backgroundColor = dark
+                ? accent.withAlphaComponent(0.14).cgColor
+                : accent.withAlphaComponent(0.10).cgColor
+            cardLayer.borderColor = dark
+                ? accent.withAlphaComponent(0.70).cgColor
+                : accent.withAlphaComponent(0.60).cgColor
+        } else if selected {
+            // Selected but another pane holds focus: keep a clearly visible accent border plus a
+            // gentle accent fill so the chosen commit is unmistakable — just calmer than focused.
+            cardLayer.backgroundColor = dark
+                ? accent.withAlphaComponent(0.10).cgColor
+                : accent.withAlphaComponent(0.07).cgColor
+            cardLayer.borderColor = dark
+                ? accent.withAlphaComponent(0.55).cgColor
+                : accent.withAlphaComponent(0.50).cgColor
+        } else if dark {
+            cardLayer.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+            cardLayer.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        } else {
+            cardLayer.backgroundColor = NSColor.white.withAlphaComponent(0.72).cgColor
+            cardLayer.borderColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        }
+
+        if let color = accentColor {
+            accentBarLayer.backgroundColor = color.withAlphaComponent(dark ? 0.80 : 0.70).cgColor
+        }
+
+        CATransaction.commit()
+    }
+
+    // The card tint is subtle (10-14%) so the background stays near-white (light) or near-dark
+    // (dark). Boost secondary/tertiary text to maintain contrast on that tinted surface.
+    // The subject blends in a little accent colour so it reads as intentionally styled rather
+    // than defaulting to stark white (dark) or plain black (light).
+    private func updateTextColors() {
+        let focused = rowSelected && rowEmphasized
+        let appearance = effectiveAppearance
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+
+        if focused {
+            let label  = NSColor.labelColor.resolvedColor(for: appearance)
+            let accent = NSColor.controlAccentColor.resolvedColor(for: appearance)
+            let accentedLabel = label.blended(withFraction: 0.20, of: accent) ?? label
+
+            subjectLabel.textColor = accentedLabel
+            if dark {
+                bodyLabel.textColor  = NSColor(white: 0.80, alpha: 1)
+                metaLabel.textColor  = NSColor(white: 0.80, alpha: 1)
+                shaLabel.textColor   = NSColor(white: 0.55, alpha: 1)
+                applyMoreButtonColor(NSColor(white: 0.65, alpha: 1))
+            } else {
+                bodyLabel.textColor  = NSColor(white: 0.18, alpha: 1)
+                metaLabel.textColor  = NSColor(white: 0.18, alpha: 1)
+                shaLabel.textColor   = NSColor(white: 0.38, alpha: 1)
+                applyMoreButtonColor(NSColor(white: 0.32, alpha: 1))
+            }
+        } else {
+            subjectLabel.textColor = .labelColor
+            bodyLabel.textColor    = .secondaryLabelColor
+            metaLabel.textColor    = .secondaryLabelColor
+            shaLabel.textColor     = .quaternaryLabelColor
+            applyMoreButtonColor(.tertiaryLabelColor)
+        }
+    }
+
+    private func applyMoreButtonColor(_ color: NSColor) {
+        moreButton.tintColor = color
+    }
+
+    private func moreClicked() { onToggleExpand?() }
 
     func configure(with commit: Commit, expanded: Bool) {
         self.expanded = expanded
@@ -639,6 +890,8 @@ private final class TimelineCellView: NSTableCellView {
             metaLabel.stringValue = "\(mergeTag)\(RelativeDate.short(commit.authorDate))"
         }
 
+        shaLabel.stringValue = String(commit.sha.prefix(7))
+
         toolTip = "\(commit.sha.prefix(10))\n\(commit.author.name) <\(commit.author.email)>\n\(RelativeDate.exact(commit.authorDate))"
 
         let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -646,10 +899,15 @@ private final class TimelineCellView: NSTableCellView {
         bodyLabel.isHidden = !(expanded && !body.isEmpty)
 
         pillStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for ref in refPills(commit.refNames).prefix(expanded ? 4 : 2) {
+        let pills = refPills(commit.refNames)
+        for ref in pills.prefix(expanded ? 4 : 2) {
             pillStack.addArrangedSubview(BadgeLabel(text: ref.text, tint: ref.tint))
         }
         pillStack.isHidden = pillStack.arrangedSubviews.isEmpty
+
+        // Accent bar: take the most prominent ref colour.
+        accentColor = pills.first.map(\.tint)
+        accentBarLayer.isHidden = accentColor == nil
 
         // "more" appears when there's a body or a subject that won't fit two collapsed lines.
         let canExpand = !body.isEmpty || subjectExceedsTwoLines(subject)
@@ -659,6 +917,8 @@ private final class TimelineCellView: NSTableCellView {
                                    accessibilityDescription: expanded ? "Collapse" : "Expand")
         moreButton.symbolConfiguration = .init(pointSize: 8, weight: .semibold)
 
+        updateLayer()
+        updateTextColors()
         needsLayout = true
     }
 
@@ -717,6 +977,28 @@ private final class TimelineCellView: NSTableCellView {
 }
 
 // MARK: - Search strip
+
+/// A thin downward-fading shadow used to lift the pinned working-copy row above the scrolling
+/// commit list. Darkest at the top edge, fading to clear.
+private final class TopEdgeShadowView: NSView {
+    private let gradient = CAGradientLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        gradient.colors = [NSColor.black.withAlphaComponent(0.16).cgColor, NSColor.clear.cgColor]
+        // Layer space has y increasing upward, so the top edge is y = 1.
+        gradient.startPoint = CGPoint(x: 0.5, y: 1)
+        gradient.endPoint = CGPoint(x: 0.5, y: 0)
+        layer?.addSublayer(gradient)
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        gradient.frame = bounds
+    }
+}
 
 /// A quiet strip shown above the commit list while a search is active, reporting the match count
 /// (or "no matches" / "showing first N"). Mirrors the dirty-banner pattern: calm, non-modal context.
@@ -825,20 +1107,39 @@ final class DirtyBannerView: NSView {
 @objc(WorkingCopyRowView)
 private final class WorkingCopyRowView: NSView {
     var onSelect: (() -> Void)?
-    var isSelected = false { didSet { needsDisplay = true } }
+    var isSelected = false {
+        didSet {
+            needsDisplay = true
+            updateCardLayer()
+        }
+    }
 
     private let icon = NSImageView()
+    private let iconCircleLayer = CALayer()
     private let titleLabel = NSTextField(labelWithString: "Uncommitted Changes")
     private let metaLabel = NSTextField(labelWithString: "")
+    private let cardLayer = CALayer()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
 
+        // Glass card layer (same treatment as commit cells).
+        cardLayer.cornerRadius = 10
+        cardLayer.cornerCurve = .continuous
+        cardLayer.borderWidth = 0.5
+        layer?.addSublayer(cardLayer)
+
+        // Tinted circle behind the pencil icon.
+        iconCircleLayer.cornerRadius = 12
+        iconCircleLayer.cornerCurve = .continuous
+        layer?.addSublayer(iconCircleLayer)
+
         icon.image = NSImage(systemSymbolName: "pencil.line", accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
         icon.contentTintColor = .controlAccentColor
         icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
 
         titleLabel.font = Theme.Font.subject()
         titleLabel.textColor = .labelColor
@@ -854,30 +1155,95 @@ private final class WorkingCopyRowView: NSView {
         // constraint (applied by NSSplitView at startup) can win without log spam.
         // Vertical anchors are required — they don't participate in the zero-width chain.
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16)
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22)
                 .id("WorkingCopyRow.icon.leading").h(),
-            icon.topAnchor.constraint(equalTo: topAnchor, constant: 12)
-                .id("WorkingCopyRow.icon.top"),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -2)
+                .id("WorkingCopyRow.icon.centerY"),
             icon.widthAnchor.constraint(equalToConstant: 16)
                 .id("WorkingCopyRow.icon.width").h(),
 
-            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8)
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10)
                 .id("WorkingCopyRow.title.leading").h(),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14)
                 .id("WorkingCopyRow.title.trailing").h(),
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 10)
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 14)
                 .id("WorkingCopyRow.title.top"),
 
             metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor)
                 .id("WorkingCopyRow.meta.leading").h(),
-            metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
+            metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
                 .id("WorkingCopyRow.meta.trailing").h(),
             metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3)
                 .id("WorkingCopyRow.meta.top"),
         ])
     }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let w = bounds.width
+        let h = bounds.height
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cardLayer.frame = CGRect(x: 8, y: 2, width: max(0, w - 16), height: max(0, h - 4))
+        // Position the accent circle behind the icon, inside the card.
+        iconCircleLayer.frame = CGRect(x: 14, y: (h - 24) / 2, width: 24, height: 24)
+        CATransaction.commit()
+
+        updateCardLayer()
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        updateCardLayer()
+    }
+
+    private func updateCardLayer() {
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let accent = NSColor.controlAccentColor
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        iconCircleLayer.backgroundColor = accent.withAlphaComponent(dark ? 0.18 : 0.13).cgColor
+
+        if isSelected {
+            cardLayer.backgroundColor = dark
+                ? accent.withAlphaComponent(0.14).cgColor
+                : accent.withAlphaComponent(0.10).cgColor
+            cardLayer.borderColor = dark
+                ? accent.withAlphaComponent(0.70).cgColor
+                : accent.withAlphaComponent(0.60).cgColor
+        } else if dark {
+            cardLayer.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
+            cardLayer.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        } else {
+            cardLayer.backgroundColor = NSColor.white.withAlphaComponent(0.72).cgColor
+            cardLayer.borderColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        }
+
+        CATransaction.commit()
+
+        if isSelected {
+            let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            if dark {
+                titleLabel.textColor = NSColor(white: 0.96, alpha: 1)
+                metaLabel.textColor  = NSColor(white: 0.80, alpha: 1)
+                icon.contentTintColor = NSColor(white: 0.90, alpha: 1)
+            } else {
+                titleLabel.textColor = .labelColor
+                metaLabel.textColor  = NSColor(white: 0.18, alpha: 1)
+                icon.contentTintColor = .controlAccentColor
+            }
+        } else {
+            titleLabel.textColor = .labelColor
+            metaLabel.textColor  = .secondaryLabelColor
+            icon.contentTintColor = .controlAccentColor
+        }
+    }
 
     func configure(staged: Int, unstaged: Int, untracked: Int, conflicts: Int, draft: String?) {
         var parts: [String] = []
@@ -890,7 +1256,7 @@ private final class WorkingCopyRowView: NSView {
         if let draft, case let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmed.isEmpty {
             let subject = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
-            metaLabel.stringValue = "\(counts) — “\(subject)”"
+            metaLabel.stringValue = "\(counts) \u{2014} \u{201C}\(subject)\u{201D}"
         } else {
             metaLabel.stringValue = counts
         }
@@ -900,13 +1266,5 @@ private final class WorkingCopyRowView: NSView {
 
     override func mouseDown(with event: NSEvent) { onSelect?() }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard isSelected else { return }
-        let inset = bounds.insetBy(dx: 6, dy: 2)
-        let path = NSBezierPath(roundedRect: inset, xRadius: Theme.Metric.cornerRadius,
-                                yRadius: Theme.Metric.cornerRadius)
-        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).setFill()
-        path.fill()
-    }
+    // Selection is rendered entirely by updateCardLayer via the cardLayer, so draw() is unused.
 }

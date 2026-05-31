@@ -54,6 +54,10 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private var noiseExpanded = false
     private var focusChanges = false
 
+    /// The hunk index the sticky overlay currently stands in for, so a click on it collapses
+    /// the right hunk. nil whenever the overlay is hidden.
+    private var floatingHunkIndex: Int?
+
     private var imageFetchTask: Task<Void, Never>?
     /// The `DiffFile.id` of the binary image currently shown in `noticeView`.
     /// Guards against re-fetching when unrelated presenter updates fire.
@@ -86,11 +90,17 @@ final class DiffViewController: NSViewController, PresenterObserving {
     @objc private func scrollDidChange(_ note: Notification) { updateFloatingHeader() }
 
     private func updateFloatingHeader() {
-        guard !hunkSections.isEmpty else { floatingHunkHeader.isHidden = true; return }
+        guard !hunkSections.isEmpty else {
+            floatingHunkIndex = nil
+            floatingHunkHeader.isHidden = true
+            return
+        }
         let scrollTop = outerScroll.contentView.bounds.origin.y
         let headerH = Theme.Metric.hunkHeaderHeight
         // Show the sticky label for the section whose own header has fully scrolled off
-        // the top but whose body lines are still in the viewport.
+        // the top but whose body lines are still in the viewport. A collapsed hunk is only
+        // `headerH` tall, so it can never satisfy both bounds — the overlay always represents
+        // an expanded hunk, which is why its chevron is always "open".
         var candidate: HunkSectionView? = nil
         for section in hunkSections {
             let top = section.frame.minY
@@ -99,9 +109,11 @@ final class DiffViewController: NSViewController, PresenterObserving {
             }
         }
         if let s = candidate {
-            floatingHunkHeader.configure(s.headerText)
+            floatingHunkIndex = s.hunkIndex
+            floatingHunkHeader.configure("▾ " + s.headerText)
             floatingHunkHeader.isHidden = false
         } else {
+            floatingHunkIndex = nil
             floatingHunkHeader.isHidden = true
         }
     }
@@ -148,6 +160,10 @@ final class DiffViewController: NSViewController, PresenterObserving {
             guard let self else { return }
             self.source?.setDiffMode(self.sideBySide ? .unified : .sideBySide)
         }
+        header.onToggleContext = { [weak self] in
+            guard let self, let source = self.source else { return }
+            source.setDiffContext(source.diffContext == .wholeFile ? .standard : .wholeFile)
+        }
 
         emptyLabel.font = NSFont.systemFont(ofSize: 13)
         emptyLabel.textColor = .tertiaryLabelColor
@@ -159,6 +175,14 @@ final class DiffViewController: NSViewController, PresenterObserving {
         outerScroll.translatesAutoresizingMaskIntoConstraints = false
         floatingHunkHeader.translatesAutoresizingMaskIntoConstraints = false
         floatingHunkHeader.isHidden = true
+        // Clicking the sticky overlay collapses the hunk it stands in for, mirroring its inline
+        // header. Collapsing removes that hunk's body, so re-evaluate which header should float.
+        floatingHunkHeader.onToggle = { [weak self] in
+            guard let self, let index = self.floatingHunkIndex else { return }
+            self.toggleHunk(index)
+            self.outerContent.layoutSubtreeIfNeeded()
+            self.updateFloatingHeader()
+        }
         container.addSubview(header)
         container.addSubview(outerScroll)
         container.addSubview(emptyLabel)
@@ -234,6 +258,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         let analysis = FileAnalysis.analyze(file)
         header.configure(with: analysis, areaBadge: selectedDiff?.areaBadge)
         header.setMode(sideBySide)
+        header.setWholeFile(source?.diffContext == .wholeFile)
         rebuildHunks(analysis: analysis)
     }
 
@@ -535,9 +560,16 @@ private final class HunkSectionView: NSView {
         didSet {
             headerLabel.stringValue = (isCollapsed ? "▸ " : "▾ ") + headerText
             innerScroll.isHidden = isCollapsed
-            innerHeightConstraint.constant = isCollapsed ? 0 : rowsHeight
+            updateInnerHeight()
         }
     }
+
+    /// True when the content is wider than the viewport, so a horizontal scroller is shown.
+    /// Under the "always show scrollbars" system setting that scroller is *legacy*-styled and
+    /// eats height at the bottom of the scroll view — we add it back so the last line isn't
+    /// clipped and the table doesn't scroll vertically by the scroller's thickness.
+    private var hasHorizontalOverflow = false
+    private var sideBySide = false
 
     private(set) var innerTable: NSTableView
     let innerScroll: HorizontalScrollView
@@ -559,6 +591,25 @@ private final class HunkSectionView: NSView {
 
     private var rowsHeight: CGFloat {
         CGFloat(rows.count) * Theme.Metric.diffLineHeight
+    }
+
+    /// Extra height to reserve for a legacy (space-consuming) horizontal scroller. Overlay
+    /// scrollers float over content and need no allowance.
+    private var scrollerAllowance: CGFloat {
+        guard hasHorizontalOverflow, innerScroll.scrollerStyle == .legacy else { return 0 }
+        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    }
+
+    private func updateInnerHeight() {
+        guard !isCollapsed, !rows.isEmpty else {
+            innerHeightConstraint.constant = 0
+            return
+        }
+        // Measure the table's true rendered height rather than assuming rows × lineHeight, so any
+        // per-row rounding or top offset is captured and the last line can't be clipped.
+        innerTable.layoutSubtreeIfNeeded()
+        let contentHeight = innerTable.rect(ofRow: rows.count - 1).maxY
+        innerHeightConstraint.constant = contentHeight + scrollerAllowance
     }
 
     init(hunkIndex: Int, dataSource: NSTableViewDataSource, delegate: NSTableViewDelegate) {
@@ -588,6 +639,7 @@ private final class HunkSectionView: NSView {
         tbl.columnAutoresizingStyle = .noColumnAutoresizing
         tbl.headerView = nil
         tbl.backgroundColor = .clear
+        tbl.style = .plain
         tbl.rowHeight = Theme.Metric.diffLineHeight
         tbl.focusRingType = .none
         tbl.intercellSpacing = .zero
@@ -605,6 +657,12 @@ private final class HunkSectionView: NSView {
         innerScroll.autohidesScrollers = true
         innerScroll.borderType = .noBorder
         innerScroll.horizontalScrollElasticity = .none
+        // Each hunk shows all its rows; there is no intended vertical scroll, so suppress the
+        // rubber-band that would otherwise let the table drift vertically.
+        innerScroll.verticalScrollElasticity = .none
+        // In a full-size-content-view window AppKit otherwise insets nested scroll views, which
+        // shifts the table down and clips the bottom line.
+        innerScroll.automaticallyAdjustsContentInsets = false
         innerScroll.translatesAutoresizingMaskIntoConstraints = false
 
         super.init(frame: .zero)
@@ -657,22 +715,53 @@ private final class HunkSectionView: NSView {
 
     func reloadTable() {
         innerTable.rowHeight = Theme.Metric.diffLineHeight
-        innerHeightConstraint.constant = isCollapsed ? 0 : rowsHeight
         innerTable.reloadData()
+        updateInnerHeight()
     }
 
     func updateContentColumnWidth(available: CGFloat) {
         // Gutter columns are hidden in side-by-side mode; subtract only the visible ones.
         let gutterCols = innerTable.tableColumns.filter { $0.identifier.rawValue != "content" }
-        let gutterWidth = gutterCols.reduce(0) { $0 + ($1.isHidden ? 0 : $1.width) }
-        let target = max(available - gutterWidth, contentMinWidth, 100)
+        let visibleGutter = gutterCols.reduce(0) { $0 + ($1.isHidden ? 0 : $1.width) }
+        let viewportContent = available - visibleGutter
+        // Side-by-side fits the viewport (the draggable divider rebalances the two halves and long
+        // lines clip rather than scroll); unified keeps the content's natural width so long lines
+        // scroll horizontally.
+        let target = sideBySide ? max(viewportContent, 100)
+                                : max(viewportContent, contentMinWidth, 100)
+
+        // A horizontal scroller appears whenever the content column is wider than the viewport;
+        // changing that state changes the height we need to reserve for the scroller.
+        let overflow = target > viewportContent + 0.5
+        if overflow != hasHorizontalOverflow {
+            hasHorizontalOverflow = overflow
+            updateInnerHeight()
+        }
+
         guard abs(innerContentCol.width - target) > 0.5 else { return }
         innerContentCol.width = target
     }
 
     func configureSideBySide(_ sideBySide: Bool) {
+        self.sideBySide = sideBySide
         for col in innerTable.tableColumns where col.identifier.rawValue != "content" {
             col.isHidden = sideBySide
+        }
+    }
+
+    /// Push a new split fraction to the visible side-by-side cells (rows offscreen pick it up when
+    /// they're next configured).
+    func applySplitFraction(_ fraction: CGFloat) {
+        guard sideBySide,
+              let contentCol = innerTable.tableColumns.firstIndex(where: {
+                  $0.identifier.rawValue == "content" }) else { return }
+        let rows = innerTable.rows(in: innerTable.visibleRect)
+        guard rows.length > 0, let range = Range(rows) else { return }
+        for r in range {
+            if let cell = innerTable.view(atColumn: contentCol, row: r,
+                                          makeIfNecessary: false) as? SplitCellView {
+                cell.setSplitFraction(fraction)
+            }
         }
     }
 }
@@ -826,14 +915,34 @@ private final class FlippedView: NSView {
 // MARK: - Sticky hunk header overlay
 
 /// Floats at the top of the diff scroll view, showing the header of the hunk whose
-/// own header has scrolled out of view. Mirrors the visual style of HunkSectionView's headerBg.
+/// own header has scrolled out of view. Unlike the inline hunk header (which sits over the
+/// pane's own background), this overlay sits *on top of scrolling diff text* — so it needs an
+/// opaque material backing, otherwise the lines beneath bleed through and it looks broken.
 @objc(DiffFloatingHunkHeaderView)
-private final class FloatingHunkHeaderView: NSView {
+private final class FloatingHunkHeaderView: NSVisualEffectView {
     private let label = NSTextField(labelWithString: "")
+    private let tint = NSView()
+    private let hairline = NSView()
+
+    var onToggle: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true
+        material = .headerView
+        blendingMode = .withinWindow
+        state = .active
+
+        let click = NSClickGestureRecognizer(target: self, action: #selector(headerTapped))
+        addGestureRecognizer(click)
+
+        // The same subtle hunk tint the inline headers carry, layered over the opaque material.
+        tint.wantsLayer = true
+        tint.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(tint)
+
+        hairline.wantsLayer = true
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hairline)
 
         label.font = Theme.Font.codeMeta
         label.textColor = .secondaryLabelColor
@@ -841,6 +950,16 @@ private final class FloatingHunkHeaderView: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
+            tint.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: trailingAnchor),
+            tint.topAnchor.constraint(equalTo: topAnchor),
+            tint.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hairline.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 1),
+
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -850,9 +969,14 @@ private final class FloatingHunkHeaderView: NSView {
 
     func configure(_ text: String) { label.stringValue = text }
 
+    @objc private func headerTapped() { onToggle?() }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
     override func layout() {
         super.layout()
-        layer?.backgroundColor = Theme.Color.hunkBackground.cgColor
+        tint.layer?.backgroundColor = Theme.Color.hunkBackground.cgColor
+        hairline.layer?.backgroundColor = NSColor.separatorColor.cgColor
     }
 }
 
@@ -901,6 +1025,12 @@ private final class SplitCellView: NSTableCellView {
     private let leftText = NSTextField(labelWithString: "")
     private let rightText = NSTextField(labelWithString: "")
 
+    /// The split point as a fraction of the cell width. Driven by the draggable divider so both
+    /// sides can be rebalanced (e.g. to read a long line on one side). Recreated, not mutated,
+    /// because a constraint's multiplier is immutable.
+    private var splitConstraint: NSLayoutConstraint!
+    private(set) var splitFraction: CGFloat = 0.5
+
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
@@ -918,6 +1048,11 @@ private final class SplitCellView: NSTableCellView {
         }
         [leftGutter, leftText, rightGutter, rightText].forEach(addSubview)
 
+        // The split is defined by the left column's width (fraction of the cell); leftBG.trailing
+        // is the divide that every other anchor hangs off.
+        splitConstraint = leftBG.widthAnchor.constraint(equalTo: widthAnchor, multiplier: splitFraction)
+            .id("SplitCell.split")
+
         let g = DiffViewController.sideGutter
         NSLayoutConstraint.activate([
             leftBG.leadingAnchor.constraint(equalTo: leadingAnchor)
@@ -926,9 +1061,8 @@ private final class SplitCellView: NSTableCellView {
                 .id("SplitCell.leftBG.top"),
             leftBG.bottomAnchor.constraint(equalTo: bottomAnchor)
                 .id("SplitCell.leftBG.bottom"),
-            leftBG.trailingAnchor.constraint(equalTo: centerXAnchor)
-                .id("SplitCell.leftBG.trailing"),
-            rightBG.leadingAnchor.constraint(equalTo: centerXAnchor)
+            splitConstraint,
+            rightBG.leadingAnchor.constraint(equalTo: leftBG.trailingAnchor)
                 .id("SplitCell.rightBG.leading"),
             rightBG.topAnchor.constraint(equalTo: topAnchor)
                 .id("SplitCell.rightBG.top"),
@@ -945,12 +1079,12 @@ private final class SplitCellView: NSTableCellView {
                 .id("SplitCell.leftGutter.centerY"),
             leftText.leadingAnchor.constraint(equalTo: leftGutter.trailingAnchor, constant: 4)
                 .id("SplitCell.leftText.leading"),
-            leftText.trailingAnchor.constraint(lessThanOrEqualTo: centerXAnchor, constant: -4)
+            leftText.trailingAnchor.constraint(lessThanOrEqualTo: leftBG.trailingAnchor, constant: -4)
                 .id("SplitCell.leftText.trailing"),
             leftText.centerYAnchor.constraint(equalTo: centerYAnchor)
                 .id("SplitCell.leftText.centerY"),
 
-            rightGutter.leadingAnchor.constraint(equalTo: centerXAnchor, constant: 6)
+            rightGutter.leadingAnchor.constraint(equalTo: leftBG.trailingAnchor, constant: 6)
                 .id("SplitCell.rightGutter.leading"),
             rightGutter.widthAnchor.constraint(equalToConstant: g - 6)
                 .id("SplitCell.rightGutter.width"),
@@ -965,6 +1099,15 @@ private final class SplitCellView: NSTableCellView {
         ])
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func setSplitFraction(_ fraction: CGFloat) {
+        guard abs(fraction - splitFraction) > 0.001 else { return }
+        splitFraction = fraction
+        splitConstraint.isActive = false
+        splitConstraint = leftBG.widthAnchor.constraint(equalTo: widthAnchor, multiplier: fraction)
+            .id("SplitCell.split")
+        splitConstraint.isActive = true
+    }
 
     func configure(left: DiffLine?, right: DiffLine?) {
         let gutterFont = Theme.Font.codeGutter
@@ -1016,11 +1159,13 @@ private final class DiffHeaderView: NSView {
     private let signalStack = NSStackView()
     private let showButton = NSButton(title: "Show anyway", target: nil, action: nil)
     private let focusButton = NSButton(title: "Focus", target: nil, action: nil)
+    private let contextButton = NSButton(title: "", target: nil, action: nil)
     private let modeButton = NSButton(title: "", target: nil, action: nil)
     private let divider = NSBox()
 
     var onExpandNoise: (() -> Void)?
     var onToggleFocus: (() -> Void)?
+    var onToggleContext: (() -> Void)?
     var onToggleMode: (() -> Void)?
 
     init() {
@@ -1061,6 +1206,16 @@ private final class DiffHeaderView: NSView {
         focusButton.toolTip = "Hide whitespace-only and moved lines"
         focusButton.translatesAutoresizingMaskIntoConstraints = false
 
+        contextButton.bezelStyle = .accessoryBarAction
+        contextButton.controlSize = .small
+        contextButton.setButtonType(.pushOnPushOff)
+        contextButton.image = NSImage(systemSymbolName: "arrow.up.and.down.text.horizontal",
+                                      accessibilityDescription: "Show whole file")
+        contextButton.imagePosition = .imageOnly
+        contextButton.target = self; contextButton.action = #selector(contextTapped)
+        contextButton.toolTip = "Show the whole file around the changes"
+        contextButton.translatesAutoresizingMaskIntoConstraints = false
+
         modeButton.bezelStyle = .accessoryBarAction
         modeButton.controlSize = .small
         modeButton.setButtonType(.pushOnPushOff)
@@ -1083,8 +1238,8 @@ private final class DiffHeaderView: NSView {
         leftRow.translatesAutoresizingMaskIntoConstraints = false
         leftRow.setCustomSpacing(10, after: pathLabel)
 
-        // Right group: stat + mode toggle — always pinned to the trailing edge.
-        let rightRow = NSStackView(views: [statLabel, modeButton])
+        // Right group: stat + context/mode toggles — always pinned to the trailing edge.
+        let rightRow = NSStackView(views: [statLabel, contextButton, modeButton])
         rightRow.orientation = .horizontal; rightRow.spacing = 8; rightRow.alignment = .centerY
         rightRow.translatesAutoresizingMaskIntoConstraints = false
         rightRow.setHuggingPriority(.required, for: .horizontal)
@@ -1126,7 +1281,14 @@ private final class DiffHeaderView: NSView {
 
     @objc private func expandTapped() { onExpandNoise?() }
     @objc private func focusTapped() { onToggleFocus?() }
+    @objc private func contextTapped() { onToggleContext?() }
     @objc private func modeTapped() { onToggleMode?() }
+
+    func setWholeFile(_ on: Bool) {
+        contextButton.state = on ? .on : .off
+        contextButton.toolTip = on ? "Show only changed lines (±3 context)"
+                                   : "Show the whole file around the changes"
+    }
 
     func setFocus(_ on: Bool, churnLines: Int) {
         focusButton.isHidden = churnLines == 0

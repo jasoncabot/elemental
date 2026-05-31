@@ -99,7 +99,8 @@ public actor GitService: GitBackend {
         }
     }
 
-    public func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] {
+    public func diff(_ range: DiffRange, context: DiffContext,
+                     in repo: Repository) async throws -> [DiffFile] {
         let rangeKey: String
         switch range {
         case .workingUnstaged: rangeKey = "unstaged"
@@ -108,8 +109,9 @@ public actor GitService: GitBackend {
         case .commit(let sha): rangeKey = "commit:\(sha)"
         case .between(let a, let b): rangeKey = "between:\(a):\(b)"
         }
-        return try await coalesced(.diff(repo.rootURL, rangeKey)) {
-            try await self.backend.diff(range, in: repo)
+        let contextKey = context == .wholeFile ? "full" : "std"
+        return try await coalesced(.diff(repo.rootURL, "\(rangeKey)#\(contextKey)")) {
+            try await self.backend.diff(range, context: context, in: repo)
         }
     }
 

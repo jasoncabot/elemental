@@ -130,6 +130,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          keyEquivalent: "")
         fileMenuItem.submenu = fileMenu
 
+        // Find menu
+        let findMenuItem = NSMenuItem()
+        mainMenu.addItem(findMenuItem)
+        let findMenu = NSMenu(title: "Find")
+        findMenu.addItem(withTitle: "Search Commits",
+                         action: #selector(focusSearchField(_:)),
+                         keyEquivalent: "f")
+        findMenuItem.submenu = findMenu
+
         // Edit menu — standard actions target the first responder automatically
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
@@ -147,6 +156,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewMenuItem = NSMenuItem()
         mainMenu.addItem(viewMenuItem)
         let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Show Commit List",
+                         action: #selector(toggleSidebar(_:)),
+                         keyEquivalent: "b")
+        viewMenu.addItem(withTitle: "Refresh",
+                         action: #selector(refreshRepository(_:)),
+                         keyEquivalent: "r")
+        viewMenu.addItem(.separator())
+        for mode in ReviewMode.allCases {
+            let item = NSMenuItem(title: mode.title,
+                                  action: #selector(selectReviewMode(_:)),
+                                  keyEquivalent: String(mode.rawValue + 1))
+            item.tag = mode.rawValue
+            viewMenu.addItem(item)
+        }
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Increase Font Size",
                          action: #selector(increaseDiffFontSize(_:)),
                          keyEquivalent: "+")
@@ -165,6 +189,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func newWindow(_ sender: Any?) {
         openNewWindow(restoreSession: false)
+    }
+
+    @objc private func focusSearchField(_ sender: Any?) {
+        keyCoordinator?.windowController.focusSearch()
+    }
+
+    @objc private func toggleSidebar(_ sender: Any?) {
+        Task { @MainActor [weak self] in self?.keyCoordinator?.toggleSidebar() }
+    }
+
+    @objc private func refreshRepository(_ sender: Any?) {
+        Task { @MainActor [weak self] in self?.keyCoordinator?.refreshActiveRepo() }
+    }
+
+    @objc private func selectReviewMode(_ sender: NSMenuItem) {
+        guard let mode = ReviewMode(rawValue: sender.tag) else { return }
+        Task { @MainActor [weak self] in
+            self?.keyCoordinator?.windowController.selectReviewMode(mode)
+        }
     }
 
     @objc private func installCommandLineTool(_ sender: Any?) {
@@ -228,6 +271,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if menuItem.action == #selector(newWindow(_:)) {
             return backend != nil
+        }
+        if menuItem.action == #selector(refreshRepository(_:)) {
+            return MainActor.assumeIsolated { self.keyCoordinator?.activeRepoURL != nil }
+        }
+        if menuItem.action == #selector(toggleSidebar(_:)) {
+            return MainActor.assumeIsolated { self.keyCoordinator != nil }
+        }
+        if menuItem.action == #selector(selectReviewMode(_:)) {
+            return MainActor.assumeIsolated {
+                guard let wc = self.keyCoordinator?.windowController else { return false }
+                menuItem.state = wc.currentReviewMode.rawValue == menuItem.tag ? .on : .off
+                return true
+            }
         }
         if menuItem.action == #selector(increaseDiffFontSize(_:)) {
             return Theme.Font.diffFontSize < Theme.Font.maxDiffSize

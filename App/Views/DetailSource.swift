@@ -27,6 +27,9 @@ protocol DetailSource: AnyObject {
     var diffMode: CommitDetailPresenter.Mode { get }
     func setDiffMode(_ mode: CommitDetailPresenter.Mode)
 
+    var diffContext: DiffContext { get }
+    func setDiffContext(_ context: DiffContext)
+
     var isLoading: Bool { get }
     var lastError: Error? { get }
 

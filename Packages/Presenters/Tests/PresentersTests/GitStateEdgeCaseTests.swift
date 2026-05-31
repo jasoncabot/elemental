@@ -489,7 +489,7 @@ private final class FailingBackend: GitBackend, @unchecked Sendable {
     func refs(for repo: Repository) async throws -> RefSnapshot {
         RefSnapshot(head: .detached(sha: ""), branches: [], remotes: [], tags: [])
     }
-    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] { [] }
+    func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile] { [] }
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus {
         WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,
                           staged: [], unstaged: [], untracked: [], conflicts: [])
@@ -511,7 +511,7 @@ private final class ErroringRefsBackend: GitBackend, @unchecked Sendable {
         throw GitError.commandFailed(command: "git for-each-ref", exitCode: 128,
                                      stderr: "fatal: unable to read HEAD")
     }
-    func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile] { [] }
+    func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile] { [] }
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus {
         WorkingCopyStatus(branch: nil, ahead: nil, behind: nil,
                           staged: [], unstaged: [], untracked: [], conflicts: [])
