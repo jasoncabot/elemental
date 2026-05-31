@@ -29,6 +29,17 @@ protocol DetailSource: AnyObject {
 
     var isLoading: Bool { get }
     var lastError: Error? { get }
+
+    /// The working-tree root of the repository, used to resolve absolute paths for Finder.
+    var repoRootURL: URL { get }
+
+    /// Raw bytes for the most meaningful version of a file: after-side normally,
+    /// before-side for deletions. Used to open the file in an external app.
+    func currentBlob(for file: DiffFile) async -> Data?
+
+    /// Raw bytes for the before/after sides of a binary image diff.
+    /// Each presenter implements this using its own repo/revision knowledge.
+    func imagePreviews(for file: DiffFile) async -> (before: Data?, after: Data?)
 }
 
 /// Which working-copy tree a file's changes belong to. Drives section grouping, the diff-pane

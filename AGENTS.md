@@ -69,6 +69,16 @@ The `@objc(Name)` annotation affects only the Objective-C runtime name; Swift ac
 
 See [ux.md](ux.md) for broader UI/UX guidance.
 
+## Build Commands
+
+Always pipe `xcodebuild` through `xcbeautify` to avoid polluting output with raw build logs:
+
+```bash
+set -o pipefail && xcodebuild [flags] | xcbeautify
+```
+
+Never run bare `xcodebuild` without piping through `xcbeautify`.
+
 ## Testing the Git Backend
 
 The `GitData` package tests exercise the real git binary against disposable fixture repositories.

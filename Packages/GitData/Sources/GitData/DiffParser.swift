@@ -162,9 +162,45 @@ enum DiffParser {
 
         func build() -> DiffFile {
             finishHunk()
+            // For 100%-similar renames/copies, git omits the "Binary files … differ" line
+            // even when the file is binary. Infer from extension so callers can rely on
+            // isBinary without special-casing rename status.
+            let inferredBinary = isBinary || (!isBinary && hunks.isEmpty && Self.hasBinaryExtension(newPath ?? oldPath))
             return DiffFile(oldPath: oldPath, newPath: newPath, status: status,
-                            isBinary: isBinary, hunks: hunks,
+                            isBinary: inferredBinary, hunks: hunks,
                             additions: additions, deletions: deletions)
         }
+
+        /// Common binary file extensions found in source repos. Used only as a fallback
+        /// when git hasn't emitted an explicit binary marker (100%-similar renames).
+        private static func hasBinaryExtension(_ path: String?) -> Bool {
+            guard let ext = path.map({ ($0 as NSString).pathExtension.lowercased() }),
+                  !ext.isEmpty else { return false }
+            return binaryExtensions.contains(ext)
+        }
+
+        private static let binaryExtensions: Set<String> = [
+            // Images
+            "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "ico", "icns",
+            "heic", "heif", "webp", "psd", "ai", "eps", "raw", "cr2", "nef", "arw",
+            // Audio / video
+            "mp3", "mp4", "mov", "avi", "mkv", "wav", "aiff", "m4a", "m4v",
+            "flv", "wmv", "webm", "ogg", "opus", "aac",
+            // Archives / packages
+            "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
+            "dmg", "pkg", "deb", "rpm", "cab", "iso",
+            // Documents
+            "pdf",
+            // Fonts
+            "ttf", "otf", "woff", "woff2", "eot",
+            // Compiled / binary outputs
+            "exe", "dll", "so", "dylib", "a", "o",
+            "class", "jar", "pyc", "pyo", "wasm",
+            "apk", "ipa",
+            // Databases
+            "db", "sqlite", "sqlite3",
+            // Cursors / legacy resources
+            "cur",
+        ]
     }
 }

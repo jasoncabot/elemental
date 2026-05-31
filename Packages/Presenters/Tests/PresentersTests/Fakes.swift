@@ -42,8 +42,25 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error> {
         lock.lock()
         _loadCallCount += 1
-        let snapshot = _commitsByScopeAll
+        var snapshot = _commitsByScopeAll
         lock.unlock()
+
+        // A `.ref` scope targets a single commit by SHA (search's exact-match leg).
+        if case .ref(let r) = query.scope {
+            snapshot = snapshot.filter { $0.sha == r || $0.sha.hasPrefix(r) }
+        }
+        // Literal, case-insensitive message match over subject+body.
+        if let grep = query.grep, !grep.isEmpty {
+            snapshot = snapshot.filter {
+                ($0.subject + "\n" + $0.body).range(of: grep, options: .caseInsensitive) != nil
+            }
+        }
+        // Only the search paths honour `maxCount`, so existing paging tests (which return the whole
+        // history per page) keep their behaviour.
+        let isSearchPath: Bool = query.grep != nil || { if case .ref = query.scope { true } else { false } }()
+        if isSearchPath, let maxCount = query.maxCount, snapshot.count > maxCount {
+            snapshot = Array(snapshot.prefix(maxCount))
+        }
         return AsyncThrowingStream { continuation in
             for c in snapshot { continuation.yield(c) }
             continuation.finish()
@@ -51,6 +68,23 @@ final class FakeBackend: GitBackend, @unchecked Sendable {
     }
 
     func commitCount(_ query: CommitQuery) async throws -> Int { commitsByScopeAll.count }
+
+    func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? {
+        let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let snapshot = commitsByScopeAll   // lock-wrapped accessor
+        let refs = stubbedRefs
+        // Exact ref-name match (full refname or its last component, e.g. "v0.1.1").
+        if let refs {
+            let all = refs.branches + refs.remotes + refs.tags
+            if let r = all.first(where: {
+                $0.name == trimmed || ($0.name as NSString).lastPathComponent == trimmed
+            }) { return r.sha }
+        }
+        // Unambiguous SHA prefix only — an ambiguous prefix resolves to nothing, as git does.
+        let matches = snapshot.filter { $0.sha == trimmed || $0.sha.hasPrefix(trimmed) }
+        return matches.count == 1 ? matches[0].sha : nil
+    }
 
     func refs(for repo: Repository) async throws -> RefSnapshot {
         if let s = stubbedRefs { return s }

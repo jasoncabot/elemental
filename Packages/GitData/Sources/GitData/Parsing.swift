@@ -20,6 +20,11 @@ enum CommitLog {
     static func revListArgs(for query: CommitQuery) -> [String] {
         // `rev-list` requires an explicit starting point — unlike `git log`, it has no implicit HEAD.
         var args = ["rev-list", "--parents", "--format=\(LogFormat.pretty)"]
+        if let grep = query.grep, !grep.isEmpty {
+            // Literal, case-insensitive message match. `--fixed-strings` stops metacharacters in the
+            // query (dots in `v0.1.1`, slashes in paths) being interpreted as a regex.
+            args += ["--regexp-ignore-case", "--fixed-strings", "--grep=\(grep)"]
+        }
         switch query.scope {
         case .head:          args.append("HEAD")
         case .branch(let b): args.append(b)

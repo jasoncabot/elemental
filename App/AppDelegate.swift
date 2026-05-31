@@ -111,6 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(withTitle: "New Window",
                          action: #selector(newWindow(_:)),
                          keyEquivalent: "n")
+        // Standard window close. `performClose:` has a nil target so it walks the responder chain to
+        // the key window — wiring the menu item is what makes ⌘W work at all (the menu bar is fully
+        // hand-built, so without this there is no Close command).
+        fileMenu.addItem(withTitle: "Close Window",
+                         action: #selector(NSWindow.performClose(_:)),
+                         keyEquivalent: "w")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Open Repository…",
                          action: #selector(openRepository(_:)),

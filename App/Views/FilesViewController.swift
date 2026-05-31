@@ -32,8 +32,13 @@ final class FilesViewController: NSViewController, PresenterObserving {
         }
     }
 
-    var filter: String = "" {
-        didSet { guard filter != oldValue else { return }; rebuild() }
+    /// Status/type filter applied to the file list, driven by the funnel control above it.
+    private var fileFilter = FileFilter() {
+        didSet {
+            guard fileFilter != oldValue else { return }
+            rebuild()
+            updateFilterButton()
+        }
     }
 
     private enum Node {
@@ -45,10 +50,13 @@ final class FilesViewController: NSViewController, PresenterObserving {
         case file(area: DetailArea?, FileAnalysis)
     }
 
-    private let outlineView = NSOutlineView()
+    private let outlineView = FilesOutlineView()
     private let scrollView = NSScrollView()
     private let commitSummary = CommitSummaryView()
     private let emptyLabel = NSTextField(labelWithString: "No changes")
+    private let filterBar = NSView()
+    private let filterButton = NSButton()
+    private var filterBarHeight: NSLayoutConstraint!
 
     private var sections: [DetailSection] = []
     private var isUpdatingSelection = false
@@ -73,6 +81,7 @@ final class FilesViewController: NSViewController, PresenterObserving {
         outlineView.autosaveExpandedItems = false
         outlineView.dataSource = self
         outlineView.delegate = self
+        outlineView.onContextMenu = { [weak self] row in self?.contextMenu(for: row) }
 
         scrollView.documentView = outlineView
         scrollView.drawsBackground = false
@@ -87,11 +96,17 @@ final class FilesViewController: NSViewController, PresenterObserving {
         emptyLabel.alignment = .center
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        setupFilterBar()
+
         let container = NSView()
         container.addSubview(commitSummary)
+        container.addSubview(filterBar)
         container.addSubview(scrollView)
         container.addSubview(emptyLabel)
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        filterBarHeight = filterBar.heightAnchor.constraint(equalToConstant: 0)
+            .id("FilesView.filterBar.height")
 
         NSLayoutConstraint.activate([
             commitSummary.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
@@ -101,7 +116,15 @@ final class FilesViewController: NSViewController, PresenterObserving {
             commitSummary.trailingAnchor.constraint(equalTo: container.trailingAnchor)
                 .id("FilesView.commitSummary.trailing"),
 
-            scrollView.topAnchor.constraint(equalTo: commitSummary.bottomAnchor)
+            filterBar.topAnchor.constraint(equalTo: commitSummary.bottomAnchor)
+                .id("FilesView.filterBar.top"),
+            filterBar.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("FilesView.filterBar.leading"),
+            filterBar.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("FilesView.filterBar.trailing"),
+            filterBarHeight,
+
+            scrollView.topAnchor.constraint(equalTo: filterBar.bottomAnchor)
                 .id("FilesView.scrollView.top"),
             scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor)
                 .id("FilesView.scrollView.leading"),
@@ -125,10 +148,15 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
     private func rebuild() {
         let rawSections = source?.sections(reviewMode: reviewMode) ?? []
-        // Apply the file-name filter within each section, dropping sections left empty.
+        // The funnel only makes sense when there's something to filter; show it once a change is loaded.
+        let rawHasFiles = rawSections.contains { !$0.files.isEmpty }
+        filterBarHeight.constant = rawHasFiles ? 32 : 0
+        filterBar.isHidden = !rawHasFiles
+
+        // Apply the status/type filter within each section, dropping sections left empty.
         sections = rawSections.compactMap { section in
-            guard !filter.isEmpty else { return section }
-            let kept = section.files.filter { $0.displayPath.localizedCaseInsensitiveContains(filter) }
+            guard fileFilter.isActive else { return section }
+            let kept = section.files.filter { fileFilter.matches($0) }
             return kept.isEmpty ? nil : DetailSection(title: section.title, area: section.area, files: kept)
         }
 
@@ -147,8 +175,12 @@ final class FilesViewController: NSViewController, PresenterObserving {
         commitSummary.setStats(total == 0
             ? "CHANGES"
             : "\(total) FILE\(total == 1 ? "" : "S")   +\(adds)  −\(dels)")
+        emptyLabel.stringValue = (total == 0 && fileFilter.isActive) ? "No files match this filter" : "No changes"
         emptyLabel.isHidden = total > 0
 
+        // Save before reloadData — expandItem calls can shift the pixel offset when rows
+        // are inserted above the current scroll position.
+        let savedOrigin = scrollView.contentView.bounds.origin
         outlineView.reloadData()
 
         // Expand groups and directory nodes, but honour any collapse state the user set.
@@ -166,6 +198,9 @@ final class FilesViewController: NSViewController, PresenterObserving {
                 }
             }
         }
+
+        scrollView.contentView.scroll(to: savedOrigin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
         syncSelection()
     }
 
@@ -204,6 +239,213 @@ final class FilesViewController: NSViewController, PresenterObserving {
     private func selection(for fa: FileAnalysis, area: DetailArea?) -> DetailSelection {
         area == nil ? DetailSelection(area: nil, fileID: fa.file.id)
                     : DetailSelection(area: area, fileID: fa.displayPath)
+    }
+
+    // MARK: - File filter (status / type)
+
+    private func setupFilterBar() {
+        filterBar.translatesAutoresizingMaskIntoConstraints = false
+
+        filterButton.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle",
+                                     accessibilityDescription: "Filter files")
+        filterButton.bezelStyle = .toolbar
+        filterButton.isBordered = false
+        filterButton.imagePosition = .imageOnly
+        filterButton.contentTintColor = .secondaryLabelColor
+        filterButton.toolTip = "Filter files by status and type"
+        filterButton.target = self
+        filterButton.action = #selector(showFilterMenu)
+        filterButton.translatesAutoresizingMaskIntoConstraints = false
+        filterBar.addSubview(filterButton)
+
+        NSLayoutConstraint.activate([
+            filterButton.trailingAnchor.constraint(equalTo: filterBar.trailingAnchor, constant: -10)
+                .id("FilesView.filterButton.trailing"),
+            filterButton.centerYAnchor.constraint(equalTo: filterBar.centerYAnchor)
+                .id("FilesView.filterButton.centerY"),
+        ])
+    }
+
+    /// The funnel reads as active (accent-tinted, filled glyph) whenever any filter is set.
+    private func updateFilterButton() {
+        let active = fileFilter.isActive
+        filterButton.contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+        filterButton.image = NSImage(
+            systemSymbolName: active ? "line.3.horizontal.decrease.circle.fill"
+                                     : "line.3.horizontal.decrease.circle",
+            accessibilityDescription: "Filter files")
+    }
+
+    /// Statuses offered in the menu, in review-friendly order.
+    private static let filterStatuses: [(DiffStatusKind, String)] = [
+        (.added, "Added"), (.modified, "Modified"), (.deleted, "Deleted"),
+        (.renamed, "Renamed"), (.copied, "Copied"),
+    ]
+    /// Type/signal facets offered in the menu.
+    private static let filterSignals: [(FileSignal, String)] = [
+        (.config, "Config"), (.dependency, "Dependencies"), (.schema, "Schema"),
+        (.security, "Security"), (.infra, "Infra"), (.test, "Tests"),
+        (.docs, "Docs"), (.generated, "Generated"),
+    ]
+
+    @objc private func showFilterMenu() {
+        let menu = NSMenu()
+
+        let statusHeader = NSMenuItem(title: "Status", action: nil, keyEquivalent: "")
+        statusHeader.isEnabled = false
+        menu.addItem(statusHeader)
+        for (status, title) in Self.filterStatuses {
+            let item = NSMenuItem(title: title, action: #selector(toggleStatusFilter(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = status
+            item.state = fileFilter.statuses.contains(status) ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let typeHeader = NSMenuItem(title: "Type", action: nil, keyEquivalent: "")
+        typeHeader.isEnabled = false
+        menu.addItem(typeHeader)
+        for (signal, title) in Self.filterSignals {
+            let item = NSMenuItem(title: title, action: #selector(toggleSignalFilter(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = signal
+            item.state = fileFilter.signals.contains(signal) ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let hideNoise = NSMenuItem(title: "Hide Noise (lockfiles, generated…)",
+                                   action: #selector(toggleHideNoise), keyEquivalent: "")
+        hideNoise.target = self
+        hideNoise.state = fileFilter.hideNoise ? .on : .off
+        menu.addItem(hideNoise)
+
+        if fileFilter.isActive {
+            menu.addItem(.separator())
+            let clear = NSMenuItem(title: "Clear Filters", action: #selector(clearFileFilter), keyEquivalent: "")
+            clear.target = self
+            menu.addItem(clear)
+        }
+
+        let origin = NSPoint(x: 0, y: filterButton.bounds.height + 4)
+        menu.popUp(positioning: nil, at: origin, in: filterButton)
+    }
+
+    @objc private func toggleStatusFilter(_ item: NSMenuItem) {
+        guard let status = item.representedObject as? DiffStatusKind else { return }
+        if fileFilter.statuses.contains(status) { fileFilter.statuses.remove(status) }
+        else { fileFilter.statuses.insert(status) }
+    }
+
+    @objc private func toggleSignalFilter(_ item: NSMenuItem) {
+        guard let signal = item.representedObject as? FileSignal else { return }
+        if fileFilter.signals.contains(signal) { fileFilter.signals.remove(signal) }
+        else { fileFilter.signals.insert(signal) }
+    }
+
+    @objc private func toggleHideNoise() { fileFilter.hideNoise.toggle() }
+
+    @objc private func clearFileFilter() { fileFilter = FileFilter() }
+
+    // MARK: - Context menu
+
+    private func contextMenu(for row: Int) -> NSMenu? {
+        guard let box = outlineView.item(atRow: row) as? Box,
+              case .file(_, let fa) = box.node else { return nil }
+
+        let menu = NSMenu()
+
+        let pathItem = NSMenuItem(title: "Copy Path",
+                                  action: #selector(copyFilePath(_:)),
+                                  keyEquivalent: "")
+        pathItem.representedObject = fa.displayPath
+        pathItem.target = self
+        menu.addItem(pathItem)
+
+        let nameItem = NSMenuItem(title: "Copy Filename",
+                                  action: #selector(copyFileName(_:)),
+                                  keyEquivalent: "")
+        nameItem.representedObject = fa.fileName
+        nameItem.target = self
+        menu.addItem(nameItem)
+
+        menu.addItem(.separator())
+
+        let openItem = NSMenuItem(title: "Open at This Version",
+                                  action: #selector(openAtThisVersion(_:)),
+                                  keyEquivalent: "")
+        openItem.representedObject = fa.file
+        openItem.target = self
+        menu.addItem(openItem)
+
+        if let repoRoot = source?.repoRootURL {
+            let finderItem = NSMenuItem(title: "Show in Finder",
+                                        action: #selector(showInFinder(_:)),
+                                        keyEquivalent: "")
+            finderItem.representedObject = finderURL(for: fa.file, repoRoot: repoRoot)
+            finderItem.target = self
+            menu.addItem(finderItem)
+        }
+
+        return menu
+    }
+
+    private func finderURL(for file: DiffFile, repoRoot: URL) -> URL {
+        // Deleted files: walk up from the old path until we find an existing directory.
+        if file.status == .deleted, let oldPath = file.oldPath {
+            var dir = (oldPath as NSString).deletingLastPathComponent
+            while !dir.isEmpty && dir != "." {
+                let url = repoRoot.appendingPathComponent(dir)
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    return url
+                }
+                dir = (dir as NSString).deletingLastPathComponent
+            }
+            return repoRoot
+        }
+        // All other statuses (including renamed/moved): use the destination path.
+        return repoRoot.appendingPathComponent(file.displayPath)
+    }
+
+    @objc private func showInFinder(_ item: NSMenuItem) {
+        guard let url = item.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @objc private func copyFilePath(_ item: NSMenuItem) {
+        guard let path = item.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    @objc private func copyFileName(_ item: NSMenuItem) {
+        guard let name = item.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(name, forType: .string)
+    }
+
+    @objc private func openAtThisVersion(_ item: NSMenuItem) {
+        guard let file = item.representedObject as? DiffFile,
+              let source else { return }
+        Task { @MainActor [weak self] in
+            guard self != nil else { return }
+            guard let data = await source.currentBlob(for: file) else { return }
+            do {
+                let uuid = UUID().uuidString
+                let tempDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("elemental-\(uuid)", isDirectory: true)
+                try FileManager.default.createDirectory(at: tempDir,
+                                                        withIntermediateDirectories: true)
+                let filename = (file.displayPath as NSString).lastPathComponent
+                let fileURL = tempDir.appendingPathComponent(filename)
+                try data.write(to: fileURL)
+                NSWorkspace.shared.open(fileURL)
+            } catch {
+                // Temp write failed — nothing actionable to surface to the user.
+            }
+        }
     }
 
     /// Whether the only section is anonymous (commit Risk/File mode), so it renders flat.
@@ -820,5 +1062,38 @@ private final class CommitSummaryView: NSView {
         }
 
         needsLayout = true
+    }
+}
+
+// MARK: - Outline view with context menu support
+
+@objc(FilesOutlineView)
+private final class FilesOutlineView: NSOutlineView {
+    var onContextMenu: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        guard row >= 0 else { return nil }
+        return onContextMenu?(row)
+    }
+}
+
+// MARK: - File filter model
+
+/// Status/type filter for the file list, driven by the funnel control. Empty facet sets mean
+/// "all"; a file must satisfy every *active* facet to remain visible.
+private struct FileFilter: Equatable {
+    var statuses: Set<DiffStatusKind> = []
+    var signals: Set<FileSignal> = []
+    var hideNoise = false
+
+    var isActive: Bool { !statuses.isEmpty || !signals.isEmpty || hideNoise }
+
+    func matches(_ fa: FileAnalysis) -> Bool {
+        if hideNoise && fa.isNoise { return false }
+        if !statuses.isEmpty && !statuses.contains(fa.statusKind) { return false }
+        if !signals.isEmpty && Set(fa.signals).isDisjoint(with: signals) { return false }
+        return true
     }
 }

@@ -36,9 +36,9 @@ final class BadgeLabel: NSView {
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
                 .id("BadgeLabel.label.bottom"),
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: horizontalInset)
-                .id("BadgeLabel.label.leading"),
+                .id("BadgeLabel.label.leading").h(),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -horizontalInset)
-                .id("BadgeLabel.label.trailing"),
+                .id("BadgeLabel.label.trailing").h(),
         ])
     }
 

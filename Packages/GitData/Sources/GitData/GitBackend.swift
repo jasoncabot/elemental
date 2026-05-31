@@ -13,14 +13,19 @@ public struct CommitQuery: Sendable {
     public var maxCount: Int?
     public var skip: Int?
     public var since: Date?
+    /// Case-insensitive, literal (non-regex) substring the commit *message* must contain. Filtering
+    /// is done by git itself (`rev-list --grep`), so only matching commits are streamed — the walk
+    /// stops once `maxCount` matches are found, bounding the cost on large histories.
+    public var grep: String?
 
     public init(repo: Repository, scope: Scope = .head,
-                maxCount: Int? = nil, skip: Int? = nil, since: Date? = nil) {
+                maxCount: Int? = nil, skip: Int? = nil, since: Date? = nil, grep: String? = nil) {
         self.repo = repo
         self.scope = scope
         self.maxCount = maxCount
         self.skip = skip
         self.since = since
+        self.grep = grep
     }
 }
 
@@ -49,6 +54,10 @@ public protocol GitBackend: Sendable {
     func openRepository(at url: URL) async throws -> Repository
     func loadCommits(_ query: CommitQuery) -> AsyncThrowingStream<Commit, Error>
     func commitCount(_ query: CommitQuery) async throws -> Int
+    /// Resolve a revision string (a SHA prefix, tag, branch, `HEAD~3`, …) to a full commit SHA,
+    /// or `nil` if it doesn't name a single unambiguous commit in this repo. Search uses this as
+    /// its "exact match" leg, letting git decide what is a real ref/object instead of guessing.
+    func resolveCommit(_ rev: String, in repo: Repository) async throws -> String?
     func refs(for repo: Repository) async throws -> RefSnapshot
     func diff(_ range: DiffRange, in repo: Repository) async throws -> [DiffFile]
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus
@@ -63,6 +72,8 @@ public protocol GitBackend: Sendable {
 }
 
 public extension GitBackend {
+    /// Default for backends without revision resolution (e.g. test fakes): no exact match.
+    func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? { nil }
     /// Default for backends without note support (e.g. test fakes): no note.
     func note(for sha: String, in repo: Repository) async throws -> String? { nil }
     /// Default for backends without working-copy message support (e.g. test fakes): none.

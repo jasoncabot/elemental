@@ -35,6 +35,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
     // when the content is shorter than the viewport. A flipped view pins content to the top.
     private let outerContent = FlippedView()
     private let emptyLabel = NSTextField(labelWithString: "Select a commit to read its changes")
+    private let floatingHunkHeader = FloatingHunkHeaderView()
 
     private var hunkSections: [HunkSectionView] = []
     /// Shown in place of hunk sections for noise-collapsed or binary files.
@@ -53,15 +54,57 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private var noiseExpanded = false
     private var focusChanges = false
 
+    private var imageFetchTask: Task<Void, Never>?
+    /// The `DiffFile.id` of the binary image currently shown in `noticeView`.
+    /// Guards against re-fetching when unrelated presenter updates fire.
+    private var currentImagePreviewID: DiffFile.ID?
+
+    /// Extensions rendered via macOS ImageIO — no custom parsing, no script execution.
+    /// SVG is rendered by Apple's static CGSVGDocument renderer (no JS, no foreignObject).
+    private static let imageExtensions: Set<String> =
+        ["png", "jpg", "jpeg", "gif", "tiff", "tif", "bmp", "heic", "webp", "svg"]
+
+    private static func isImageFile(_ path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return imageExtensions.contains(ext)
+    }
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeDidChange),
                                                name: .diffFontSizeDidChange, object: nil)
+        outerScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrollDidChange),
+                                               name: NSView.boundsDidChangeNotification,
+                                               object: outerScroll.contentView)
     }
 
     @objc private func fontSizeDidChange() { reload() }
+
+    @objc private func scrollDidChange(_ note: Notification) { updateFloatingHeader() }
+
+    private func updateFloatingHeader() {
+        guard !hunkSections.isEmpty else { floatingHunkHeader.isHidden = true; return }
+        let scrollTop = outerScroll.contentView.bounds.origin.y
+        let headerH = Theme.Metric.hunkHeaderHeight
+        // Show the sticky label for the section whose own header has fully scrolled off
+        // the top but whose body lines are still in the viewport.
+        var candidate: HunkSectionView? = nil
+        for section in hunkSections {
+            let top = section.frame.minY
+            if top + headerH < scrollTop && section.frame.maxY > scrollTop {
+                candidate = section
+            }
+        }
+        if let s = candidate {
+            floatingHunkHeader.configure(s.headerText)
+            floatingHunkHeader.isHidden = false
+        } else {
+            floatingHunkHeader.isHidden = true
+        }
+    }
 
     @objc private func handleMagnify(_ gr: NSMagnificationGestureRecognizer) {
         if gr.state == .began { sizeAtGestureStart = Theme.Font.diffFontSize }
@@ -114,9 +157,12 @@ final class DiffViewController: NSViewController, PresenterObserving {
         let container = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         outerScroll.translatesAutoresizingMaskIntoConstraints = false
+        floatingHunkHeader.translatesAutoresizingMaskIntoConstraints = false
+        floatingHunkHeader.isHidden = true
         container.addSubview(header)
         container.addSubview(outerScroll)
         container.addSubview(emptyLabel)
+        container.addSubview(floatingHunkHeader)
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
@@ -139,6 +185,15 @@ final class DiffViewController: NSViewController, PresenterObserving {
                 .id("DiffView.emptyLabel.centerX"),
             emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor)
                 .id("DiffView.emptyLabel.centerY"),
+
+            floatingHunkHeader.topAnchor.constraint(equalTo: outerScroll.topAnchor)
+                .id("DiffView.floatingHunkHeader.top"),
+            floatingHunkHeader.leadingAnchor.constraint(equalTo: outerScroll.leadingAnchor)
+                .id("DiffView.floatingHunkHeader.leading"),
+            floatingHunkHeader.trailingAnchor.constraint(equalTo: outerScroll.trailingAnchor)
+                .id("DiffView.floatingHunkHeader.trailing"),
+            floatingHunkHeader.heightAnchor.constraint(equalToConstant: Theme.Metric.hunkHeaderHeight)
+                .id("DiffView.floatingHunkHeader.height"),
         ])
 
         view = container
@@ -198,7 +253,11 @@ final class DiffViewController: NSViewController, PresenterObserving {
         header.setNoiseCollapsed(false)
 
         if file.hunks.isEmpty && file.isBinary {
-            showNotice(signal: "binary", lines: 0)
+            if Self.isImageFile(file.displayPath) {
+                showImagePreview(for: file)
+            } else {
+                showNotice(signal: "binary", lines: 0)
+            }
             return
         }
 
@@ -207,7 +266,9 @@ final class DiffViewController: NSViewController, PresenterObserving {
         }
         header.setFocus(focusChanges, churnLines: churnLines)
 
-        // Remove notice if present.
+        // Remove notice (or image preview) if present.
+        imageFetchTask?.cancel(); imageFetchTask = nil
+        currentImagePreviewID = nil
         noticeView?.removeFromSuperview()
         noticeView = nil
 
@@ -239,16 +300,73 @@ final class DiffViewController: NSViewController, PresenterObserving {
 
         installSections(newSections)
         updateAllContentColumnWidths()
+        updateFloatingHeader()
     }
 
     // MARK: - Section management
 
     private func clearSections() {
+        imageFetchTask?.cancel()
+        imageFetchTask = nil
+        currentImagePreviewID = nil
         hunkSections.forEach { $0.removeFromSuperview() }
         hunkSections = []
         tableToSection = [:]
+        NSLayoutConstraint.deactivate(sectionStackConstraints)
+        sectionStackConstraints = []
         noticeView?.removeFromSuperview()
         noticeView = nil
+        floatingHunkHeader.isHidden = true
+    }
+
+    private func showImagePreview(for file: DiffFile) {
+        // Guard: same file already loaded — just update the mode, no re-fetch needed.
+        if currentImagePreviewID == file.id, let preview = noticeView as? BinaryImagePreviewView {
+            preview.setMode(sideBySide)
+            return
+        }
+        currentImagePreviewID = file.id
+
+        // Tear down any previous state.
+        imageFetchTask?.cancel()
+        imageFetchTask = nil
+        hunkSections.forEach { $0.removeFromSuperview() }
+        hunkSections = []
+        tableToSection = [:]
+        NSLayoutConstraint.deactivate(sectionStackConstraints)
+        sectionStackConstraints = []
+        noticeView?.removeFromSuperview()
+
+        let preview = BinaryImagePreviewView()
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        outerContent.addSubview(preview)
+        NSLayoutConstraint.activate([
+            preview.leadingAnchor.constraint(equalTo: outerContent.leadingAnchor)
+                .id("BinaryPreview.leading"),
+            preview.trailingAnchor.constraint(equalTo: outerContent.trailingAnchor)
+                .id("BinaryPreview.trailing"),
+            preview.topAnchor.constraint(equalTo: outerContent.topAnchor)
+                .id("BinaryPreview.top"),
+            preview.bottomAnchor.constraint(equalTo: outerContent.bottomAnchor)
+                .id("BinaryPreview.bottom"),
+        ])
+        noticeView = preview
+        let initialMode = sideBySide
+        preview.setLoading(sideBySide: initialMode)
+
+        guard let source else { return }
+        imageFetchTask = Task { @MainActor [weak self, weak source] in
+            guard let source else { return }
+            let (beforeData, afterData) = await source.imagePreviews(for: file)
+            guard !Task.isCancelled,
+                  let self,
+                  let preview = self.noticeView as? BinaryImagePreviewView else { return }
+            preview.configure(
+                before: beforeData.flatMap { NSImage(data: $0) },
+                after:  afterData.flatMap  { NSImage(data: $0) },
+                sideBySide: self.sideBySide
+            )
+        }
     }
 
     private func showNotice(signal: String, lines: Int) {
@@ -571,6 +689,8 @@ extension DiffViewController: NSTableViewDataSource, NSTableViewDelegate {
         Theme.Metric.diffLineHeight
     }
 
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
+
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         guard let section = tableToSection[tableView],
               row >= 0, row < section.rows.count else { return DiffRowView() }
@@ -701,6 +821,39 @@ extension DiffViewController {
 @objc(DiffFlippedView)
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+// MARK: - Sticky hunk header overlay
+
+/// Floats at the top of the diff scroll view, showing the header of the hunk whose
+/// own header has scrolled out of view. Mirrors the visual style of HunkSectionView's headerBg.
+@objc(DiffFloatingHunkHeaderView)
+private final class FloatingHunkHeaderView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        label.font = Theme.Font.codeMeta
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ text: String) { label.stringValue = text }
+
+    override func layout() {
+        super.layout()
+        layer?.backgroundColor = Theme.Color.hunkBackground.cgColor
+    }
 }
 
 // MARK: - Horizontal-only scroll view
@@ -1027,4 +1180,193 @@ private final class DiffHeaderView: NSView {
     }
 
     func setNoiseCollapsed(_ collapsed: Bool) { showButton.isHidden = !collapsed }
+}
+
+// MARK: - Binary image before/after preview
+
+/// Shows a binary image diff. In unified mode: the current version fills the full width.
+/// In side-by-side mode: before (left) and after (right) are shown together for comparison.
+/// Images are decoded by macOS ImageIO via NSImage(data:) — no custom parsing, no script execution.
+@objc(BinaryImagePreviewView)
+private final class BinaryImagePreviewView: NSView {
+    // Before column — shown only in side-by-side mode.
+    private let beforeLabel = NSTextField(labelWithString: "Before")
+    private let beforeImage = NSImageView()
+    private let beforeNote  = NSTextField(labelWithString: "")
+    private let divider     = NSView()
+
+    // After column — present in both modes; layout changes with mode.
+    private let afterLabel  = NSTextField(labelWithString: "After")
+    private let afterImage  = NSImageView()
+    private let afterNote   = NSTextField(labelWithString: "")
+
+    private let spinner = NSProgressIndicator()
+
+    private var cachedBefore: NSImage?
+    private var cachedAfter:  NSImage?
+
+    // Constraints swapped between modes.
+    private var unifiedConstraints: [NSLayoutConstraint] = []
+    private var splitConstraints:   [NSLayoutConstraint] = []
+
+    init() {
+        super.init(frame: .zero)
+
+        beforeLabel.font = Theme.Font.secondary
+        beforeLabel.textColor = .secondaryLabelColor
+        beforeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        afterLabel.font = Theme.Font.secondary
+        afterLabel.textColor = .secondaryLabelColor
+        afterLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        for note in [beforeNote, afterNote] {
+            note.font = Theme.Font.secondary
+            note.textColor = .tertiaryLabelColor
+            note.alignment = .center
+            note.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        for iv in [beforeImage, afterImage] {
+            iv.imageScaling = .scaleProportionallyUpOrDown
+            iv.imageAlignment = .alignCenter
+            iv.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        divider.wantsLayer = true
+        divider.translatesAutoresizingMaskIntoConstraints = false
+
+        spinner.style = .spinning
+        spinner.controlSize = .regular
+        spinner.isIndeterminate = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.isHidden = true
+
+        [beforeLabel, beforeImage, beforeNote, divider,
+         afterLabel, afterImage, afterNote, spinner].forEach(addSubview)
+
+        // Constraints always active regardless of mode.
+        NSLayoutConstraint.activate([
+            // afterImage: trailing and height never change.
+            afterImage.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
+                .id("BinaryPreview.afterImage.trailing"),
+            afterImage.heightAnchor.constraint(equalToConstant: 320)
+                .id("BinaryPreview.afterImage.height"),
+            // Drives the view's overall height in the scroll view.
+            afterImage.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
+                .id("BinaryPreview.afterImage.bottom"),
+
+            // Before column: fixed position (hidden in unified mode).
+            beforeLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12)
+                .id("BinaryPreview.beforeLabel.leading"),
+            beforeLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12)
+                .id("BinaryPreview.beforeLabel.top"),
+            beforeImage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12)
+                .id("BinaryPreview.beforeImage.leading"),
+            beforeImage.trailingAnchor.constraint(equalTo: centerXAnchor, constant: -12)
+                .id("BinaryPreview.beforeImage.trailing"),
+            beforeImage.topAnchor.constraint(equalTo: beforeLabel.bottomAnchor, constant: 8)
+                .id("BinaryPreview.beforeImage.top"),
+            beforeImage.heightAnchor.constraint(equalToConstant: 320)
+                .id("BinaryPreview.beforeImage.height"),
+
+            // Divider: fixed position (hidden in unified mode).
+            divider.centerXAnchor.constraint(equalTo: centerXAnchor)
+                .id("BinaryPreview.divider.centerX"),
+            divider.topAnchor.constraint(equalTo: topAnchor)
+                .id("BinaryPreview.divider.top"),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor)
+                .id("BinaryPreview.divider.bottom"),
+            divider.widthAnchor.constraint(equalToConstant: 1)
+                .id("BinaryPreview.divider.width"),
+
+            beforeNote.centerXAnchor.constraint(equalTo: beforeImage.centerXAnchor)
+                .id("BinaryPreview.beforeNote.centerX"),
+            beforeNote.centerYAnchor.constraint(equalTo: beforeImage.centerYAnchor)
+                .id("BinaryPreview.beforeNote.centerY"),
+            afterNote.centerXAnchor.constraint(equalTo: afterImage.centerXAnchor)
+                .id("BinaryPreview.afterNote.centerX"),
+            afterNote.centerYAnchor.constraint(equalTo: afterImage.centerYAnchor)
+                .id("BinaryPreview.afterNote.centerY"),
+
+            spinner.centerXAnchor.constraint(equalTo: centerXAnchor)
+                .id("BinaryPreview.spinner.centerX"),
+            spinner.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("BinaryPreview.spinner.centerY"),
+        ])
+
+        // Unified: afterImage fills full width with top padding, no label above it.
+        unifiedConstraints = [
+            afterImage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12)
+                .id("BinaryPreview.unified.afterImage.leading"),
+            afterImage.topAnchor.constraint(equalTo: topAnchor, constant: 12)
+                .id("BinaryPreview.unified.afterImage.top"),
+        ]
+
+        // Split: afterImage occupies the right half, label above it.
+        splitConstraints = [
+            afterLabel.leadingAnchor.constraint(equalTo: centerXAnchor, constant: 12)
+                .id("BinaryPreview.split.afterLabel.leading"),
+            afterLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12)
+                .id("BinaryPreview.split.afterLabel.top"),
+            afterImage.leadingAnchor.constraint(equalTo: centerXAnchor, constant: 12)
+                .id("BinaryPreview.split.afterImage.leading"),
+            afterImage.topAnchor.constraint(equalTo: afterLabel.bottomAnchor, constant: 8)
+                .id("BinaryPreview.split.afterImage.top"),
+        ]
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    func setLoading(sideBySide: Bool) {
+        cachedBefore = nil; cachedAfter = nil
+        beforeImage.image = nil; afterImage.image = nil
+        beforeNote.stringValue = ""; afterNote.stringValue = ""
+        spinner.isHidden = false; spinner.startAnimation(nil)
+        applyLayout(sideBySide: sideBySide)
+    }
+
+    func configure(before: NSImage?, after: NSImage?, sideBySide: Bool) {
+        cachedBefore = before; cachedAfter = after
+        spinner.stopAnimation(nil); spinner.isHidden = true
+        applyImages(sideBySide: sideBySide)
+        applyLayout(sideBySide: sideBySide)
+    }
+
+    /// Called when the mode toggles without a new file being loaded.
+    func setMode(_ sideBySide: Bool) {
+        applyImages(sideBySide: sideBySide)
+        applyLayout(sideBySide: sideBySide)
+    }
+
+    private func applyImages(sideBySide: Bool) {
+        if sideBySide {
+            beforeImage.image = cachedBefore
+            beforeNote.stringValue = cachedBefore == nil ? "No previous version" : ""
+            afterImage.image = cachedAfter
+            afterNote.stringValue = cachedAfter == nil ? "File deleted" : ""
+        } else {
+            // Unified: show "after"; fall back to "before" for deleted files.
+            afterImage.image = cachedAfter ?? cachedBefore
+            afterNote.stringValue = (cachedAfter == nil && cachedBefore == nil) ? "No image data" : ""
+        }
+    }
+
+    private func applyLayout(sideBySide: Bool) {
+        let entering  = sideBySide ? splitConstraints   : unifiedConstraints
+        let leaving   = sideBySide ? unifiedConstraints : splitConstraints
+        NSLayoutConstraint.deactivate(leaving)
+        NSLayoutConstraint.activate(entering)
+
+        let showBefore = sideBySide
+        beforeLabel.isHidden = !showBefore
+        beforeImage.isHidden = !showBefore
+        beforeNote.isHidden  = !showBefore
+        divider.isHidden     = !showBefore
+        afterLabel.isHidden  = !showBefore
+    }
 }

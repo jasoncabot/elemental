@@ -17,7 +17,9 @@ enum Theme {
         static let cornerRadius: CGFloat = 6
         static let pillRadius: CGFloat = 4
 
-        static let timelineRowHeight: CGFloat = 56
+        /// Collapsed height of a commit cell. Sized to comfortably hold a two-line wrapped subject
+        /// plus the metadata row; expanded cells compute their own height (see TimelineCellView).
+        static let timelineRowHeight: CGFloat = 78
         static let fileRowHeight: CGFloat = 26
         static let groupRowHeight: CGFloat = 24
         static var diffLineHeight: CGFloat { ceil(Font.diffFontSize * 1.5) }

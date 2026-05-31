@@ -10,9 +10,16 @@ protocol TimelineViewControllerDelegate: AnyObject {
 }
 
 /// The left column: a readable review timeline rather than a git-log table.
-/// Each commit leads with its subject (intent), with recency/author as quiet
-/// secondary metadata and ref pills for orientation. Exact SHA/timestamp are
-/// surfaced on hover via tooltip, keeping the skim view uncluttered.
+///
+/// Each commit reads like a message in a chat — an author glyph, the subject leading (wrapped to two
+/// lines), then quiet recency/author metadata and ref pills. Commits with more to say carry a "more"
+/// affordance that expands the row *in place* to reveal the full subject and body, so you can flick
+/// through many commits collapsed and open just the ones you want. Collapsed rows are a fixed height
+/// (no per-commit text measurement), which keeps the table virtualising large histories; only the
+/// handful of expanded rows compute a height.
+///
+/// When a search is active the list switches to the presenter's bounded result set and a quiet strip
+/// reports the match count.
 final class TimelineViewController: NSViewController, PresenterObserving {
     weak var delegate: TimelineViewControllerDelegate?
 
@@ -20,6 +27,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         didSet {
             oldValue?.removeObserver(self)
             presenter?.addObserver(self)
+            expandedSHAs.removeAll()
             reloadFromPresenter()
         }
     }
@@ -52,15 +60,23 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     private let tableView = TimelineTableView()
     private let scrollView = NSScrollView()
     private let dirtyBanner = DirtyBannerView()
+    private let searchBanner = SearchBannerView()
     private let workingCopyRow = WorkingCopyRowView()
     private var workingCopyHeight: NSLayoutConstraint!
     private let emptyLabel = NSTextField(labelWithString: "Drop a repository folder here")
     private var isUpdatingSelection = false
     private var lastReportedSHA: String? = nil
-    private var renderedToken: String?
-    private var renderedTotalCount: Int? = nil
-    private var scrollSettleTimer: Timer?
+    private var renderedRowCount = -1
     private var bannerHeight: NSLayoutConstraint!
+    private var searchBannerHeight: NSLayoutConstraint!
+
+    /// SHAs of commits the user has expanded in place. Persists across page eviction so an expanded
+    /// commit re-opens when scrolled back into view.
+    private var expandedSHAs: Set<String> = []
+    /// Tracks the table width so expanded rows can be re-measured on resize.
+    private var lastTableWidth: CGFloat = 0
+    /// Tracks search on/off transitions so stale expansions are cleared when the list swaps.
+    private var lastSearchActive = false
 
     // MARK: - Lifecycle
 
@@ -72,12 +88,13 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         tableView.backgroundColor = .clear
         tableView.rowHeight = Theme.Metric.timelineRowHeight
         tableView.focusRingType = .none
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
+        tableView.intercellSpacing = NSSize(width: 0, height: 4)
         tableView.selectionHighlightStyle = .regular
         tableView.style = .inset
         tableView.dataSource = self
         tableView.delegate = self
         tableView.onNavigate = { [weak self] delta in self?.move(by: delta) }
+        tableView.onContextMenu = { [weak self] row in self?.contextMenu(for: row) }
 
         scrollView.documentView = tableView
         scrollView.drawsBackground = false
@@ -85,17 +102,12 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.automaticallyAdjustsContentInsets = true
-        scrollView.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(clipViewBoundsChanged),
-            name: NSView.boundsDidChangeNotification,
-            object: scrollView.contentView
-        )
 
         dirtyBanner.refreshButton.target = self
         dirtyBanner.refreshButton.action = #selector(refreshTapped)
         dirtyBanner.isHidden = true
+
+        searchBanner.isHidden = true
 
         workingCopyRow.onSelect = { [weak self] in self?.selectWorkingCopy() }
         workingCopyRow.isHidden = true
@@ -111,15 +123,19 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         container.state = .followsWindowActiveState
 
         dirtyBanner.translatesAutoresizingMaskIntoConstraints = false
+        searchBanner.translatesAutoresizingMaskIntoConstraints = false
         workingCopyRow.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scrollView)
         container.addSubview(dirtyBanner)
+        container.addSubview(searchBanner)
         container.addSubview(workingCopyRow)
         container.addSubview(emptyLabel)
 
         bannerHeight = dirtyBanner.heightAnchor.constraint(equalToConstant: 0)
             .id("TimelineView.dirtyBanner.height")
+        searchBannerHeight = searchBanner.heightAnchor.constraint(equalToConstant: 0)
+            .id("TimelineView.searchBanner.height")
         workingCopyHeight = workingCopyRow.heightAnchor.constraint(equalToConstant: 0)
             .id("TimelineView.workingCopyRow.height")
 
@@ -132,7 +148,15 @@ final class TimelineViewController: NSViewController, PresenterObserving {
                 .id("TimelineView.dirtyBanner.trailing"),
             bannerHeight,
 
-            workingCopyRow.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor)
+            searchBanner.topAnchor.constraint(equalTo: dirtyBanner.bottomAnchor)
+                .id("TimelineView.searchBanner.top"),
+            searchBanner.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("TimelineView.searchBanner.leading"),
+            searchBanner.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("TimelineView.searchBanner.trailing"),
+            searchBannerHeight,
+
+            workingCopyRow.topAnchor.constraint(equalTo: searchBanner.bottomAnchor)
                 .id("TimelineView.workingCopyRow.top"),
             workingCopyRow.leadingAnchor.constraint(equalTo: container.leadingAnchor)
                 .id("TimelineView.workingCopyRow.leading"),
@@ -158,45 +182,17 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         view = container
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-        scrollSettleTimer?.invalidate()
-    }
-
-    // MARK: - Scroll handling
-
-    @objc private func clipViewBoundsChanged() {
-        // Sequential load when near the end of the current loaded window.
-        loadMoreIfNearLoadedEnd()
-
-        // After scrolling settles, check if the visible rows are outside the loaded window
-        // and jump-load from the correct position. This covers scrollbar drags.
-        scrollSettleTimer?.invalidate()
-        scrollSettleTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            self?.loadAtCurrentScrollPosition()
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // Expanded rows are measured against the table width; re-measure the visible ones on resize.
+        let width = tableView.bounds.width
+        guard width != lastTableWidth else { return }
+        lastTableWidth = width
+        guard !expandedSHAs.isEmpty else { return }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        if visible.length > 0, let range = Range(visible) {
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: range))
         }
-    }
-
-    private func loadMoreIfNearLoadedEnd() {
-        guard let p = presenter else { return }
-        let loadedEnd = p.baseOffset + p.commits.count
-        guard let docHeight = scrollView.documentView?.frame.height, docHeight > 0 else { return }
-        let rowHeight: CGFloat = 48
-        let visibleBottom = scrollView.contentView.bounds.maxY
-        // Trigger when the visible bottom is within ~15 rows of the loaded window's end.
-        if visibleBottom > CGFloat(loadedEnd) * rowHeight - 300 {
-            p.loadMore()
-        }
-    }
-
-    private func loadAtCurrentScrollPosition() {
-        let clipBounds = scrollView.contentView.bounds
-        let firstVisibleRow = tableView.row(at: NSPoint(x: 4, y: clipBounds.minY + 4))
-        guard firstVisibleRow >= 0, let p = presenter else { return }
-        let baseOffset = p.baseOffset
-        let loadedCount = p.commits.count
-        guard firstVisibleRow < baseOffset || firstVisibleRow >= baseOffset + loadedCount else { return }
-        p.loadFrom(row: firstVisibleRow)
     }
 
     // MARK: - Actions
@@ -205,13 +201,79 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         delegate?.timelineViewControllerDidRequestRefresh(self)
     }
 
+    // MARK: - Expand / collapse
+
+    private func toggleExpand(at row: Int) {
+        guard let sha = presenter?.commit(atRow: row)?.sha else { return }
+        if expandedSHAs.contains(sha) { expandedSHAs.remove(sha) } else { expandedSHAs.insert(sha) }
+        // Update the row's content (body shown/hidden, chevron flipped) then animate its height.
+        tableView.reloadData(forRowIndexes: IndexSet(integer: row),
+                             columnIndexes: IndexSet(integer: 0))
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            ctx.allowsImplicitAnimation = true
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
+        }
+    }
+
+    // MARK: - Context menu
+
+    private func contextMenu(for row: Int) -> NSMenu? {
+        guard let commit = presenter?.commit(atRow: row) else { return nil }
+
+        let menu = NSMenu()
+
+        let shortItem = NSMenuItem(title: "Copy SHA",
+                                   action: #selector(copyShortSHA(_:)),
+                                   keyEquivalent: "")
+        shortItem.representedObject = commit
+        shortItem.target = self
+        menu.addItem(shortItem)
+
+        let fullItem = NSMenuItem(title: "Copy Full SHA",
+                                  action: #selector(copyFullSHA(_:)),
+                                  keyEquivalent: "")
+        fullItem.representedObject = commit
+        fullItem.target = self
+        menu.addItem(fullItem)
+
+        menu.addItem(.separator())
+
+        let msgItem = NSMenuItem(title: "Copy Commit Message",
+                                 action: #selector(copyCommitMessage(_:)),
+                                 keyEquivalent: "")
+        msgItem.representedObject = commit
+        msgItem.target = self
+        menu.addItem(msgItem)
+
+        return menu
+    }
+
+    @objc private func copyShortSHA(_ item: NSMenuItem) {
+        guard let commit = item.representedObject as? Commit else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(String(commit.sha.prefix(7)), forType: .string)
+    }
+
+    @objc private func copyFullSHA(_ item: NSMenuItem) {
+        guard let commit = item.representedObject as? Commit else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(commit.sha, forType: .string)
+    }
+
+    @objc private func copyCommitMessage(_ item: NSMenuItem) {
+        guard let commit = item.representedObject as? Commit else { return }
+        let message = commit.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? commit.subject
+            : "\(commit.subject)\n\n\(commit.body.trimmingCharacters(in: .whitespacesAndNewlines))"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message, forType: .string)
+    }
+
     private func move(by delta: Int) {
-        guard let p = presenter, !p.commits.isEmpty else { return }
-        let baseOffset = p.baseOffset
+        guard let p = presenter, p.rowCount > 0 else { return }
         let current = tableView.selectedRow
-        let minRow = baseOffset
-        let maxRow = baseOffset + p.commits.count - 1
-        let next = min(max(current + delta, minRow), maxRow)
+        let next = min(max(current + delta, 0), p.rowCount - 1)
         guard next != current else { return }
         tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         tableView.scrollRowToVisible(next)
@@ -239,6 +301,12 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     }
 
     private func refreshWorkingCopyRow() {
+        // The working copy isn't a commit and can't be a search hit — hide it while searching.
+        if presenter?.isSearchActive == true {
+            workingCopyRow.isHidden = true
+            workingCopyHeight.constant = 0
+            return
+        }
         guard let wc = workingCopyPresenter else {
             workingCopyRow.isHidden = true
             workingCopyHeight.constant = 0
@@ -278,50 +346,53 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     }
 
     private func reloadFromPresenter() {
-        let commits = presenter?.commits ?? []
-        let baseOffset = presenter?.baseOffset ?? 0
-        emptyLabel.isHidden = !commits.isEmpty
+        let rowCount = presenter?.rowCount ?? 0
+        let searching = presenter?.isSearchActive ?? false
+
+        // A search session swap (or its end) invalidates expansions, whose heights no longer apply.
+        if searching != lastSearchActive {
+            lastSearchActive = searching
+            expandedSHAs.removeAll()
+        }
+
+        // Quiet search strip ("12 results…" / "No commits match…").
+        let summary = presenter?.searchSummary
+        searchBanner.text = summary ?? ""
+        searchBanner.isHidden = summary == nil
+        searchBannerHeight.constant = summary == nil ? 0 : 30
+
+        // The drop-target hint is for an empty pane only — never during a search (the strip speaks).
+        emptyLabel.isHidden = rowCount > 0 || searching || (presenter?.totalCommitCount == nil)
+
         let dirty = presenter?.isDirty ?? false
         dirtyBanner.isHidden = !dirty
         bannerHeight.constant = dirty ? 30 : 0
 
-        // Rebuild table when the loaded commit window changes (position or content).
-        let token = "\(baseOffset)|\(commits.count)|\(commits.first?.sha ?? "")|\(commits.last?.sha ?? "")"
-        if token != renderedToken {
-            renderedToken = token
-            renderedTotalCount = nil  // force noteNumberOfRowsChanged below
-            // reloadData() scrolls to the selected row (row 0) which snaps the view
-            // back to the top when the loaded window is far from the selection.
-            // Suppress the notification so the settle timer isn't reset by our restore.
-            let savedOrigin = scrollView.contentView.bounds.origin
-            tableView.reloadData()
-            scrollView.contentView.postsBoundsChangedNotifications = false
-            scrollView.contentView.scroll(to: savedOrigin)
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-            scrollView.contentView.postsBoundsChangedNotifications = true
-            DispatchQueue.main.async { [weak self] in self?.loadMoreIfNearLoadedEnd() }
-        }
+        // Keep the working-copy row in step with search state.
+        refreshWorkingCopyRow()
 
-        // Extend row count to reflect full history so scrollbar position is accurate.
-        let newTotal = presenter?.totalCommitCount
-        if newTotal != renderedTotalCount {
-            renderedTotalCount = newTotal
-            tableView.noteNumberOfRowsChanged()
+        // Structural change (row count moved) → tell the table; otherwise just refresh the
+        // rows on screen so newly arrived pages render. Neither path moves the scroll position.
+        if rowCount != renderedRowCount {
+            renderedRowCount = rowCount
+            tableView.reloadData()
+        } else {
+            let visible = tableView.rows(in: tableView.visibleRect)
+            if visible.length > 0, let range = Range(visible) {
+                tableView.reloadData(forRowIndexes: IndexSet(integersIn: range),
+                                     columnIndexes: IndexSet(integer: 0))
+            }
         }
 
         // While the working copy is being reviewed, leave the commit table unselected.
         guard !workingCopySelected else { return }
 
         let currentSHA = presenter?.selectedSHA
-        if let sha = currentSHA,
-           let arrayIdx = commits.firstIndex(where: { $0.sha == sha }) {
-            let rowIdx = baseOffset + arrayIdx
-            if tableView.selectedRow != rowIdx {
-                isUpdatingSelection = true
-                tableView.selectRowIndexes(IndexSet(integer: rowIdx), byExtendingSelection: false)
-                tableView.scrollRowToVisible(rowIdx)
-                isUpdatingSelection = false
-            }
+        if let sha = currentSHA, let rowIdx = presenter?.row(forSHA: sha),
+           tableView.selectedRow != rowIdx {
+            isUpdatingSelection = true
+            tableView.selectRowIndexes(IndexSet(integer: rowIdx), byExtendingSelection: false)
+            isUpdatingSelection = false
         }
 
         if currentSHA != lastReportedSHA {
@@ -330,67 +401,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         }
     }
 
-    private func hasPills(_ commit: Commit) -> Bool {
-        commit.refNames.contains { name in
-            let n = name.trimmingCharacters(in: .whitespaces)
-            return !n.isEmpty && n != "HEAD"
-        }
-    }
-}
-
-// MARK: - Data / delegate
-
-extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        let baseOffset = presenter?.baseOffset ?? 0
-        let loaded = presenter?.commits.count ?? 0
-        let total = presenter?.totalCommitCount ?? (baseOffset + loaded)
-        return max(baseOffset + loaded, total)
-    }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        guard let commits = presenter?.commits else { return 48 }
-        let baseOffset = presenter?.baseOffset ?? 0
-        let idx = row - baseOffset
-        guard idx >= 0 && idx < commits.count else { return 48 }
-        return hasPills(commits[idx]) ? 76 : 48
-    }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        TimelineRowView()
-    }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let commits = presenter?.commits ?? []
-        let baseOffset = presenter?.baseOffset ?? 0
-        let idx = row - baseOffset
-
-        // Trigger sequential load when the displayed row is within 50 of the loaded window's end.
-        if idx >= commits.count - 50 && idx < commits.count + 50 {
-            DispatchQueue.main.async { [weak self] in self?.presenter?.loadMore() }
-        }
-
-        guard idx >= 0 && idx < commits.count else {
-            let id = NSUserInterfaceItemIdentifier("TimelinePlaceholder")
-            return tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
-                ?? { let v = NSTableCellView(); v.identifier = id; return v }()
-        }
-
-        let id = NSUserInterfaceItemIdentifier("TimelineCell")
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TimelineCellView)
-            ?? TimelineCellView(identifier: id)
-        cell.configure(with: commits[idx])
-        return cell
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isUpdatingSelection else { return }
-        let row = tableView.selectedRow
-        let commits = presenter?.commits ?? []
-        let baseOffset = presenter?.baseOffset ?? 0
-        let idx = row - baseOffset
-        let sha = (idx >= 0 && idx < commits.count) ? commits[idx].sha : nil
-        // Picking a commit ends working-copy review.
+    private func commitSelected(sha: String) {
         if workingCopySelected {
             workingCopySelected = false
             workingCopyRow.isSelected = false
@@ -399,11 +410,63 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
-// MARK: - Timeline table (keyboard nav)
+// MARK: - Data / delegate
+
+extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        presenter?.rowCount ?? 0
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        TimelineRowView()
+    }
+
+    /// Collapsed rows are a constant height (no text measurement, so virtualisation is preserved);
+    /// only expanded rows — a handful, always on-screen — compute their height from the content.
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        let collapsed = Theme.Metric.timelineRowHeight
+        guard !expandedSHAs.isEmpty,
+              let commit = presenter?.residentCommit(atRow: row),
+              expandedSHAs.contains(commit.sha) else { return collapsed }
+        return TimelineCellView.expandedHeight(for: commit, width: tableView.bounds.width)
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        // commit(atRow:) returns nil for a not-yet-resident page and schedules its load; the
+        // presenter notifies on arrival and reloadFromPresenter refreshes the visible rows.
+        guard let commit = presenter?.commit(atRow: row) else {
+            let id = NSUserInterfaceItemIdentifier("TimelinePlaceholder")
+            return tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
+                ?? { let v = NSTableCellView(); v.identifier = id; return v }()
+        }
+
+        let id = NSUserInterfaceItemIdentifier("TimelineCell")
+        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TimelineCellView)
+            ?? TimelineCellView(identifier: id)
+        cell.configure(with: commit, expanded: expandedSHAs.contains(commit.sha))
+        cell.onToggleExpand = { [weak self, weak cell] in
+            guard let self, let cell else { return }
+            let r = self.tableView.row(for: cell)
+            guard r >= 0 else { return }
+            self.toggleExpand(at: r)
+        }
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isUpdatingSelection else { return }
+        let row = tableView.selectedRow
+        guard let sha = presenter?.commit(atRow: row)?.sha else { return }
+        commitSelected(sha: sha)
+    }
+}
+
+// MARK: - Timeline table (keyboard nav + context menu)
 
 @objc(TimelineTableView)
 private final class TimelineTableView: NSTableView {
     var onNavigate: ((Int) -> Void)?
+    var onContextMenu: ((Int) -> NSMenu?)?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -414,6 +477,17 @@ private final class TimelineTableView: NSTableView {
         default: break
         }
         super.keyDown(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        guard row >= 0 else { return nil }
+        // Select the right-clicked row so it's clear which commit the menu applies to.
+        if selectedRow != row {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        return onContextMenu?(row)
     }
 }
 
@@ -432,11 +506,30 @@ private final class TimelineRowView: NSTableRowView {
 
 // MARK: - Cell view
 
+/// A chat-style commit row. Collapsed it shows an author glyph, a two-line subject, and a quiet
+/// metadata line with ref pills. When the commit has a body (or a subject that overflows), a "more"
+/// control expands the row in place to reveal the full subject and body.
 @objc(TimelineCellView)
 private final class TimelineCellView: NSTableCellView {
+    // Layout metrics (shared with `expandedHeight` so measurement matches the live layout).
+    fileprivate static let textLeading: CGFloat = 14
+    fileprivate static let trailing: CGFloat = 14
+    fileprivate static let topInset: CGFloat = 12
+    fileprivate static let bottomInset: CGFloat = 12
+    fileprivate static let vSpacing: CGFloat = 5
+    fileprivate static let metaRowHeight: CGFloat = 18
+
+    var onToggleExpand: (() -> Void)?
+
     private let subjectLabel = NSTextField(labelWithString: "")
+    private let bodyLabel = NSTextField(labelWithString: "")
     private let metaLabel = NSTextField(labelWithString: "")
     private let pillStack = NSStackView()
+    private let moreButton = NSButton()
+    private let metaRow = NSStackView()
+    private let vStack = NSStackView()
+
+    private var expanded = false
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -444,63 +537,138 @@ private final class TimelineCellView: NSTableCellView {
 
         subjectLabel.font = Theme.Font.subject()
         subjectLabel.textColor = .labelColor
-        subjectLabel.lineBreakMode = .byTruncatingTail
-        subjectLabel.maximumNumberOfLines = 1
-        subjectLabel.translatesAutoresizingMaskIntoConstraints = false
+        subjectLabel.lineBreakMode = .byWordWrapping
+        subjectLabel.maximumNumberOfLines = 2
+        subjectLabel.cell?.usesSingleLineMode = false
         subjectLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        bodyLabel.font = Theme.Font.secondary
+        bodyLabel.textColor = .secondaryLabelColor
+        bodyLabel.lineBreakMode = .byWordWrapping
+        bodyLabel.maximumNumberOfLines = 0
+        bodyLabel.cell?.usesSingleLineMode = false
+        bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         metaLabel.font = Theme.Font.secondary
         metaLabel.textColor = .secondaryLabelColor
         metaLabel.lineBreakMode = .byTruncatingTail
-        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+        metaLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         pillStack.orientation = .horizontal
-        pillStack.spacing = 4
-        pillStack.translatesAutoresizingMaskIntoConstraints = false
+        pillStack.spacing = 6
+        pillStack.alignment = .centerY
+        pillStack.setContentHuggingPriority(.required, for: .horizontal)
 
-        addSubview(subjectLabel)
-        addSubview(metaLabel)
-        addSubview(pillStack)
+        moreButton.bezelStyle = .inline
+        moreButton.isBordered = false
+        moreButton.font = Theme.Font.caption
+        moreButton.imagePosition = .imageTrailing
+        moreButton.contentTintColor = .tertiaryLabelColor
+        moreButton.target = self
+        moreButton.action = #selector(moreClicked)
+        moreButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        metaRow.orientation = .horizontal
+        metaRow.spacing = 6
+        metaRow.alignment = .centerY
+        metaRow.distribution = .fill
+        metaRow.addArrangedSubview(pillStack)
+        metaRow.addArrangedSubview(metaLabel)
+        metaRow.addArrangedSubview(spacer)
+        metaRow.addArrangedSubview(moreButton)
+
+        vStack.orientation = .vertical
+        vStack.alignment = .leading
+        vStack.spacing = Self.vSpacing
+        vStack.translatesAutoresizingMaskIntoConstraints = false
+        vStack.addArrangedSubview(subjectLabel)
+        vStack.addArrangedSubview(bodyLabel)
+        vStack.addArrangedSubview(metaRow)
+
+        addSubview(vStack)
 
         NSLayoutConstraint.activate([
-            subjectLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16)
-                .id("TimelineCell.subject.leading"),
-            subjectLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
-                .id("TimelineCell.subject.trailing"),
-            subjectLabel.topAnchor.constraint(equalTo: topAnchor, constant: 9)
-                .id("TimelineCell.subject.top"),
-
-            metaLabel.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor)
-                .id("TimelineCell.meta.leading"),
-            metaLabel.trailingAnchor.constraint(equalTo: subjectLabel.trailingAnchor)
-                .id("TimelineCell.meta.trailing"),
-            metaLabel.topAnchor.constraint(equalTo: subjectLabel.bottomAnchor, constant: 3)
-                .id("TimelineCell.meta.top"),
-
-            pillStack.leadingAnchor.constraint(equalTo: subjectLabel.leadingAnchor)
-                .id("TimelineCell.pills.leading"),
-            pillStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
-                .id("TimelineCell.pills.trailing"),
-            pillStack.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 6)
-                .id("TimelineCell.pills.top"),
+            vStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.textLeading)
+                .id("TimelineCell.vStack.leading"),
+            vStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.trailing)
+                .id("TimelineCell.vStack.trailing"),
+            vStack.topAnchor.constraint(equalTo: topAnchor, constant: Self.topInset)
+                .id("TimelineCell.vStack.top"),
+            // A `.leading`-aligned stack sizes children to their intrinsic width and won't stretch
+            // them — so pin the wrapping labels and the meta row to the full text width, otherwise
+            // the subject/body refuse to wrap and the "more" control floats mid-row.
+            subjectLabel.widthAnchor.constraint(equalTo: vStack.widthAnchor)
+                .id("TimelineCell.subject.width").h(),
+            bodyLabel.widthAnchor.constraint(equalTo: vStack.widthAnchor)
+                .id("TimelineCell.body.width").h(),
+            metaRow.widthAnchor.constraint(equalTo: vStack.widthAnchor)
+                .id("TimelineCell.metaRow.width").h(),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(with commit: Commit) {
-        subjectLabel.stringValue = commit.subject.isEmpty ? "(no subject)" : commit.subject
+    override func layout() {
+        super.layout()
+        // Multiline labels need an explicit wrapping width to report the right height.
+        let width = vStack.bounds.width
+        if width > 0 {
+            subjectLabel.preferredMaxLayoutWidth = width
+            bodyLabel.preferredMaxLayoutWidth = width
+        }
+    }
+
+    @objc private func moreClicked() { onToggleExpand?() }
+
+    func configure(with commit: Commit, expanded: Bool) {
+        self.expanded = expanded
+        let subject = commit.subject.isEmpty ? "(no subject)" : commit.subject
+        subjectLabel.stringValue = subject
+        subjectLabel.maximumNumberOfLines = expanded ? 0 : 2
+
         let mergeTag = commit.isMerge ? "merge · " : ""
-        metaLabel.stringValue = "\(mergeTag)\(RelativeDate.short(commit.authorDate)) · \(commit.author.name)"
+        if expanded {
+            metaLabel.stringValue = "\(mergeTag)\(RelativeDate.short(commit.authorDate)) · \(commit.author.name)"
+        } else {
+            metaLabel.stringValue = "\(mergeTag)\(RelativeDate.short(commit.authorDate))"
+        }
 
         toolTip = "\(commit.sha.prefix(10))\n\(commit.author.name) <\(commit.author.email)>\n\(RelativeDate.exact(commit.authorDate))"
 
+        let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        bodyLabel.stringValue = body
+        bodyLabel.isHidden = !(expanded && !body.isEmpty)
+
         pillStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for ref in refPills(commit.refNames).prefix(3) {
+        for ref in refPills(commit.refNames).prefix(expanded ? 4 : 2) {
             pillStack.addArrangedSubview(BadgeLabel(text: ref.text, tint: ref.tint))
         }
         pillStack.isHidden = pillStack.arrangedSubviews.isEmpty
+
+        // "more" appears when there's a body or a subject that won't fit two collapsed lines.
+        let canExpand = !body.isEmpty || subjectExceedsTwoLines(subject)
+        moreButton.isHidden = !canExpand
+        moreButton.title = expanded ? "less " : "more "
+        moreButton.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down",
+                                   accessibilityDescription: expanded ? "Collapse" : "Expand")
+        moreButton.symbolConfiguration = .init(pointSize: 8, weight: .semibold)
+
+        needsLayout = true
+    }
+
+    /// Cheap check for the collapsed "more" affordance: would the subject wrap past two lines at the
+    /// current width? Falls back to a character-count heuristic before the cell has a width.
+    private func subjectExceedsTwoLines(_ subject: String) -> Bool {
+        let width = vStack.bounds.width
+        guard width > 0 else { return subject.count > 80 }
+        return Self.textHeight(subject, font: Theme.Font.subject(), width: width)
+            > ceil(Theme.Font.subject().boundingRectForFont.height * 2) + 2
     }
 
     private func refPills(_ refNames: [String]) -> [(text: String, tint: NSColor)] {
@@ -520,6 +688,83 @@ private final class TimelineCellView: NSTableCellView {
             }
         }
         return pills
+    }
+
+    // MARK: - Height measurement
+
+    /// Exact height for an expanded row, matching the live `vStack` layout above. Used by the
+    /// table's `heightOfRow` only for the (few) expanded rows.
+    static func expandedHeight(for commit: Commit, width tableWidth: CGFloat) -> CGFloat {
+        let textWidth = max(40, tableWidth - textLeading - trailing)
+        let subject = commit.subject.isEmpty ? "(no subject)" : commit.subject
+        let subjectH = textHeight(subject, font: Theme.Font.subject(), width: textWidth)
+        let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bodyH = body.isEmpty ? 0 : textHeight(body, font: Theme.Font.secondary, width: textWidth)
+
+        var height = topInset + subjectH + vSpacing + metaRowHeight + bottomInset
+        if bodyH > 0 { height += bodyH + vSpacing }
+        return ceil(max(height, Theme.Metric.timelineRowHeight))
+    }
+
+    private static func textHeight(_ string: String, font: NSFont, width: CGFloat) -> CGFloat {
+        guard !string.isEmpty, width > 0 else { return 0 }
+        let attr = NSAttributedString(string: string, attributes: [.font: font])
+        let rect = attr.boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading])
+        return ceil(rect.height)
+    }
+}
+
+// MARK: - Search strip
+
+/// A quiet strip shown above the commit list while a search is active, reporting the match count
+/// (or "no matches" / "showing first N"). Mirrors the dirty-banner pattern: calm, non-modal context.
+@objc(SearchBannerView)
+final class SearchBannerView: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    var text: String = "" {
+        didSet { label.stringValue = text; label.toolTip = text }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    private func commonInit() {
+        wantsLayer = true
+
+        let icon = NSImageView(image: NSImage(
+            systemSymbolName: "line.3.horizontal.decrease", accessibilityDescription: nil) ?? NSImage())
+        icon.contentTintColor = .secondaryLabelColor
+        icon.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+
+        label.font = Theme.Font.secondary
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [icon, label])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        clipsToBounds = true
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14)
+                .id("SearchBanner.stack.leading"),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
+                .id("SearchBanner.stack.trailing"),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor)
+                .id("SearchBanner.stack.centerY"),
+        ])
     }
 }
 
@@ -665,4 +910,3 @@ private final class WorkingCopyRowView: NSView {
         path.fill()
     }
 }
-

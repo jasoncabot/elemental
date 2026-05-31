@@ -6,11 +6,12 @@ import AppKit
 /// Per the UX brief, the window leans into native materials and a transparent titlebar
 /// so content flows under the toolbar. Repositories are added by dropping a folder
 /// anywhere on the window — they are contextual state, not a permanent navigation pane.
-final class MainWindowController: NSWindowController, NSSplitViewDelegate {
+final class MainWindowController: NSWindowController {
 
-    private let splitView = DropSplitView()
+    private let splitVC = NSSplitViewController()
+    private var sidebarItem: NSSplitViewItem!
 
-    private let timelineVC: NSViewController
+    private let timelineVC: TimelineViewController
     private let filesVC: NSViewController
     private let diffVC: NSViewController
     private let toolbarController: ToolbarController
@@ -21,7 +22,7 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
     // MARK: - Init
 
     init(toolbarController: ToolbarController,
-         timelineVC: NSViewController,
+         timelineVC: TimelineViewController,
          filesVC: NSViewController,
          diffVC: NSViewController) {
         self.toolbarController = toolbarController
@@ -58,52 +59,41 @@ final class MainWindowController: NSWindowController, NSSplitViewDelegate {
     // MARK: - Layout
 
     private func buildLayout() {
-        splitView.isVertical = true
-        splitView.dividerStyle = .thin
-        splitView.delegate = self
-        splitView.translatesAutoresizingMaskIntoConstraints = false
+        let dropSplit = DropSplitView()
+        dropSplit.isVertical = true
+        dropSplit.onDropFolders = { [weak self] urls in self?.onDropFolders?(urls) }
+        dropSplit.registerForDraggedTypes([.fileURL])
+        dropSplit.autosaveName = "MainSplitView"
+        splitVC.splitView = dropSplit
 
-        splitView.addArrangedSubview(timelineVC.view)
-        splitView.addArrangedSubview(filesVC.view)
-        splitView.addArrangedSubview(diffVC.view)
+        sidebarItem = NSSplitViewItem(sidebarWithViewController: timelineVC)
+        sidebarItem.minimumThickness = 220
+        sidebarItem.maximumThickness = 380
+        sidebarItem.allowsFullHeightLayout = true
+        sidebarItem.preferredThicknessFraction = 0.20
 
-        splitView.onDropFolders = { [weak self] urls in self?.onDropFolders?(urls) }
-        splitView.registerForDraggedTypes([.fileURL])
+        let filesItem = NSSplitViewItem(viewController: filesVC)
+        filesItem.minimumThickness = 240
+        filesItem.preferredThicknessFraction = 0.22
 
-        window?.contentView = splitView
+        let diffItem = NSSplitViewItem(viewController: diffVC)
+        diffItem.minimumThickness = 360
 
-        // Initial proportions: narrow timeline (20%), medium files pane (22%), wide diff canvas (58%).
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let width = self.window?.frame.width else { return }
-            self.splitView.setPosition(width * 0.20, ofDividerAt: 0)
-            self.splitView.setPosition(width * 0.42, ofDividerAt: 1)
-        }
+        splitVC.addSplitViewItem(sidebarItem)
+        splitVC.addSplitViewItem(filesItem)
+        splitVC.addSplitViewItem(diffItem)
+
+        window?.contentViewController = splitVC
     }
 
-    // MARK: - NSSplitViewDelegate
+    // MARK: - Sidebar toggle
 
-    func splitView(_ splitView: NSSplitView,
-                   constrainMinCoordinate proposedMinimumPosition: CGFloat,
-                   ofSubviewAt dividerIndex: Int) -> CGFloat {
-        switch dividerIndex {
-        case 0: return 220
-        case 1: return 460
-        default: return proposedMinimumPosition
+    func toggleTimeline() {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            ctx.allowsImplicitAnimation = true
+            sidebarItem.animator().isCollapsed = !sidebarItem.isCollapsed
         }
-    }
-
-    func splitView(_ splitView: NSSplitView,
-                   constrainMaxCoordinate proposedMaximumPosition: CGFloat,
-                   ofSubviewAt dividerIndex: Int) -> CGFloat {
-        switch dividerIndex {
-        case 0: return 380
-        case 1: return splitView.bounds.width - 360
-        default: return proposedMaximumPosition
-        }
-    }
-
-    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
-        false
     }
 }
 

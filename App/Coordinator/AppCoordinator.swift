@@ -253,7 +253,13 @@ extension AppCoordinator: ToolbarControllerDelegate {
 
     func toolbarDidChangeReviewMode(_ mode: ReviewMode) { filesVC.reviewMode = mode }
 
-    func toolbarDidChangeSearch(_ query: String) { filesVC.filter = query }
+    /// Search now filters the commit timeline (message / SHA / ref); the files pane has its own
+    /// status/type filter control instead.
+    func toolbarDidChangeSearch(_ query: String) { timelineVC.presenter?.setSearch(query) }
+
+    func toolbarDidToggleSidebar() {
+        windowController.toggleTimeline()
+    }
 }
 
 // MARK: - TimelineViewControllerDelegate

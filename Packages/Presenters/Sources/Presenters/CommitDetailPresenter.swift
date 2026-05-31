@@ -28,6 +28,7 @@ public final class CommitDetailPresenter: Presenter {
     public private(set) var selectedFile: DiffFile.ID?
     public private(set) var mode: Mode = .unified
 
+    public var repoRootURL: URL { repo.rootURL }
     public var files: [DiffFile] { filesState.value ?? [] }
     public var isLoading: Bool { filesState.isLoading }
     public var lastError: Error? { filesState.error }
@@ -112,6 +113,37 @@ public final class CommitDetailPresenter: Presenter {
                 self.notify()
             }
         }
+    }
+
+    /// Returns the blob for the most meaningful version of a file at this commit:
+    /// the after-side for added/modified/renamed files, the before-side for deletions.
+    public func currentBlob(for file: DiffFile) async -> Data? {
+        if file.status == .deleted {
+            guard let parentSHA = commit?.parents.first else { return nil }
+            return try? await backend.blob(
+                at: file.oldPath ?? file.displayPath, rev: parentSHA, in: repo)
+        }
+        guard let sha else { return nil }
+        return try? await backend.blob(at: file.displayPath, rev: sha, in: repo)
+    }
+
+    /// Returns the raw bytes for the before/after sides of a binary file diff.
+    /// Callers should pass the result to `NSImage(data:)` for rendering.
+    public func imagePreviews(for file: DiffFile) async -> (before: Data?, after: Data?) {
+        let afterData: Data?
+        if let sha, file.status != .deleted {
+            afterData = try? await backend.blob(at: file.displayPath, rev: sha, in: repo)
+        } else {
+            afterData = nil
+        }
+        let beforeData: Data?
+        if let parentSHA = commit?.parents.first, file.status != .added {
+            beforeData = try? await backend.blob(
+                at: file.oldPath ?? file.displayPath, rev: parentSHA, in: repo)
+        } else {
+            beforeData = nil
+        }
+        return (beforeData, afterData)
     }
 
     deinit { loadTask?.cancel() }

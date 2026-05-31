@@ -89,6 +89,10 @@ public actor GitService: GitBackend {
         try await backend.commitCount(query)
     }
 
+    public func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? {
+        try await backend.resolveCommit(rev, in: repo)
+    }
+
     public func refs(for repo: Repository) async throws -> RefSnapshot {
         try await coalesced(.refs(repo.rootURL)) {
             try await self.backend.refs(for: repo)

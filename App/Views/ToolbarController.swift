@@ -11,6 +11,7 @@ protocol ToolbarControllerDelegate: AnyObject {
     func toolbarDidSelectRepo(_ url: URL)
     func toolbarDidChangeReviewMode(_ mode: ReviewMode)
     func toolbarDidChangeSearch(_ query: String)
+    func toolbarDidToggleSidebar()
 }
 
 /// Owns the window toolbar. The brief says the top bar carries *context, not content*:
@@ -38,7 +39,16 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
     private let modeControl = NSSegmentedControl(
         labels: ReviewMode.allCases.map(\.title),
         trackingMode: .selectOne, target: nil, action: nil)
-    private let searchField = NSSearchField()
+    private weak var searchItem: NSSearchToolbarItem?
+    private let sidebarToggleButton: NSButton = {
+        let b = NSButton()
+        b.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Toggle Sidebar")
+        b.image?.isTemplate = true
+        b.bezelStyle = .toolbar
+        b.toolTip = "Hide/Show Commit List"
+        b.translatesAutoresizingMaskIntoConstraints = false
+        return b
+    }()
 
     private var repos: [RepoChoice] = []
 
@@ -47,6 +57,7 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         static let branch = NSToolbarItem.Identifier("branch")
         static let mode = NSToolbarItem.Identifier("mode")
         static let search = NSToolbarItem.Identifier("search")
+        static let sidebarToggle = NSToolbarItem.Identifier("sidebarToggle")
     }
 
     override init() {
@@ -78,11 +89,8 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
         modeControl.selectedSegment = ReviewMode.narrative.rawValue
         modeControl.controlSize = .large
 
-        searchField.target = self
-        searchField.action = #selector(searchChanged)
-        searchField.placeholderString = "Search files & commits"
-        searchField.sendsSearchStringImmediately = false
-        searchField.sendsWholeSearchString = false
+        sidebarToggleButton.target = self
+        sidebarToggleButton.action = #selector(sidebarToggleClicked)
     }
 
     // MARK: - Public API (coordinator-driven)
@@ -137,7 +145,11 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
     }
 
     @objc private func searchChanged() {
-        delegate?.toolbarDidChangeSearch(searchField.stringValue)
+        delegate?.toolbarDidChangeSearch(searchItem?.searchField.stringValue ?? "")
+    }
+
+    @objc private func sidebarToggleClicked() {
+        delegate?.toolbarDidToggleSidebar()
     }
 
     // MARK: - NSToolbarDelegate
@@ -165,8 +177,19 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
             return item
         case ItemID.search:
             let item = NSSearchToolbarItem(itemIdentifier: id)
-            item.searchField = searchField
             item.resignsFirstResponderWithCancel = true
+            item.searchField.placeholderString = "Search commits — message, SHA, or ref"
+            item.searchField.sendsSearchStringImmediately = false
+            item.searchField.sendsWholeSearchString = false
+            item.searchField.target = self
+            item.searchField.action = #selector(searchChanged)
+            searchItem = item
+            return item
+        case ItemID.sidebarToggle:
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.view = sidebarToggleButton
+            item.label = "Toggle Sidebar"
+            item.visibilityPriority = .high
             return item
         default:
             return nil
@@ -174,10 +197,11 @@ final class ToolbarController: NSObject, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ItemID.repo, ItemID.branch, .flexibleSpace, ItemID.mode, .flexibleSpace, ItemID.search]
+        [ItemID.sidebarToggle, ItemID.repo, ItemID.branch, .flexibleSpace, ItemID.mode, .flexibleSpace, ItemID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.flexibleSpace, .space]
     }
 }
+

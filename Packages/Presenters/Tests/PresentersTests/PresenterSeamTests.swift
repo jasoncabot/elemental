@@ -127,6 +127,100 @@ final class PresenterSeamTests: XCTestCase {
         await awaitCondition(on: presenter) { !presenter.files.isEmpty }
         XCTAssertEqual(backend.diffCallCount, 1, "second show of same SHA must be cache hit")
     }
+
+    // MARK: - Search
+
+    private func searchBackend() -> FakeBackend {
+        let backend = FakeBackend()
+        backend.commitsByScopeAll = [
+            makeCommit("aaa111", subject: "Improve websocket reconnect handling"),
+            makeCommit("bbb222", subject: "Refactor sidebar rendering"),
+            makeCommit("ccc333", subject: "Tune reconnect backoff and jitter"),
+            makeCommit("ddd444", subject: "Remove deprecated auth middleware"),
+        ]
+        backend.stubbedRefs = RefSnapshot(
+            head: .detached(sha: "aaa111"),
+            branches: [Ref(name: "refs/heads/main", sha: "aaa111", kind: .branch)],
+            remotes: [],
+            tags: [Ref(name: "refs/tags/v0.1.1", sha: "ccc333", kind: .tag)])
+        return backend
+    }
+
+    /// A free-text query filters the timeline to message matches and auto-selects the first.
+    func testSearchByMessageFiltersTimeline() async throws {
+        let backend = searchBackend()
+        let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        presenter.setSearch("reconnect")
+        await awaitCondition(on: presenter) { presenter.isSearchActive && presenter.rowCount == 2 }
+
+        XCTAssertEqual(presenter.commit(atRow: 0)?.sha, "aaa111")
+        XCTAssertEqual(presenter.commit(atRow: 1)?.sha, "ccc333")
+        XCTAssertEqual(presenter.selectedSHA, "aaa111", "first match is auto-selected")
+        XCTAssertEqual(presenter.searchSummary, "2 results for “reconnect”")
+    }
+
+    /// A SHA prefix narrows to exactly that one commit.
+    func testSearchBySHAPrefixNarrowsToOne() async throws {
+        let backend = searchBackend()
+        let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        presenter.setSearch("ddd4")
+        await awaitCondition(on: presenter) { presenter.isSearchActive && presenter.searchSummary != nil }
+
+        XCTAssertEqual(presenter.rowCount, 1)
+        XCTAssertEqual(presenter.commit(atRow: 0)?.sha, "ddd444")
+        XCTAssertEqual(presenter.selectedSHA, "ddd444")
+    }
+
+    /// A tag name resolves to its commit (the exact leg), unioned ahead of any message matches.
+    func testSearchByTagResolvesToTaggedCommit() async throws {
+        let backend = searchBackend()
+        let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        presenter.setSearch("v0.1.1")
+        await awaitCondition(on: presenter) { presenter.isSearchActive && presenter.searchSummary != nil }
+
+        XCTAssertEqual(presenter.rowCount, 1)
+        XCTAssertEqual(presenter.commit(atRow: 0)?.sha, "ccc333")
+    }
+
+    /// Clearing the search restores the full paged timeline and the pre-search selection.
+    func testClearingSearchRestoresTimeline() async throws {
+        let backend = searchBackend()
+        let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+        presenter.select("bbb222")
+
+        presenter.setSearch("reconnect")
+        await awaitCondition(on: presenter) { presenter.rowCount == 2 }
+
+        presenter.setSearch("")
+        await awaitCondition(on: presenter) { !presenter.isSearchActive }
+        XCTAssertEqual(presenter.rowCount, 4, "full history is restored")
+        XCTAssertNil(presenter.searchSummary)
+        XCTAssertEqual(presenter.selectedSHA, "bbb222", "pre-search selection is restored")
+    }
+
+    /// A query that matches nothing reports an empty result set, not a fallback to the full list.
+    func testSearchWithNoMatchesIsEmpty() async throws {
+        let backend = searchBackend()
+        let presenter = TimelinePresenter(backend: backend, watcher: FakeWatcher(), repo: repo())
+        presenter.start()
+        await awaitCondition(on: presenter) { !presenter.isLoading }
+
+        presenter.setSearch("zzzzz-nope")
+        await awaitCondition(on: presenter) { presenter.searchSummary != nil }
+        XCTAssertEqual(presenter.rowCount, 0)
+        XCTAssertEqual(presenter.searchSummary, "No commits match “zzzzz-nope”")
+    }
 }
 
 // MARK: - Auxiliary fake that records query parameters

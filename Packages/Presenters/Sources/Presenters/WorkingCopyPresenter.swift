@@ -38,6 +38,7 @@ public final class WorkingCopyPresenter: Presenter {
     /// Inline vs side-by-side rendering for the diff pane. Shared shape with `CommitDetailPresenter`
     /// so a single header toggle drives whichever detail source is active.
     public var mode: CommitDetailPresenter.Mode = .unified
+    public var repoRootURL: URL { repo.rootURL }
 
     public var status: WorkingCopyStatus? { statusState.value }
     public var stagedFiles: [DiffFile] { stagedState.value ?? [] }
@@ -238,6 +239,54 @@ public final class WorkingCopyPresenter: Presenter {
             selectedFile = nil
             selectedArea = nil
             untrackedState = .idle
+        }
+    }
+
+    /// Returns the blob for the most meaningful version of a file in this working-copy area:
+    /// the after-side for added/modified files, the before-side for deletions.
+    public func currentBlob(for file: DiffFile) async -> Data? {
+        let path = file.displayPath
+        switch selectedArea {
+        case .workingStaged:
+            if file.status == .deleted {
+                return try? await backend.blob(at: path, rev: "HEAD", in: repo)
+            }
+            return try? await backend.blob(at: path, rev: "", in: repo)
+        case .workingUnstaged:
+            if file.status == .deleted {
+                return try? await backend.blob(at: path, rev: "", in: repo)
+            }
+            return try? Data(contentsOf: repo.rootURL.appendingPathComponent(path))
+        case .workingUntracked:
+            return try? Data(contentsOf: repo.rootURL.appendingPathComponent(path))
+        default:
+            return nil
+        }
+    }
+
+    /// Returns the raw bytes for the before/after sides of a binary file diff.
+    /// Callers should pass the result to `NSImage(data:)` for rendering.
+    public func imagePreviews(for file: DiffFile) async -> (before: Data?, after: Data?) {
+        let path = file.displayPath
+        switch selectedArea {
+        case .workingStaged:
+            // before: HEAD blob, after: index blob (empty rev = index)
+            let before = file.status == .added ? nil
+                : (try? await backend.blob(at: path, rev: "HEAD", in: repo))
+            let after = file.status == .deleted ? nil
+                : (try? await backend.blob(at: path, rev: "", in: repo))
+            return (before, after)
+        case .workingUnstaged:
+            // before: index blob (empty rev = index), after: disk file
+            let before = try? await backend.blob(at: path, rev: "", in: repo)
+            let after: Data? = file.status == .deleted ? nil
+                : (try? Data(contentsOf: repo.rootURL.appendingPathComponent(path)))
+            return (before, after)
+        case .workingUntracked:
+            let after = try? Data(contentsOf: repo.rootURL.appendingPathComponent(path))
+            return (nil, after)
+        default:
+            return (nil, nil)
         }
     }
 

@@ -119,6 +119,9 @@ public actor CLIGitBackend: GitBackend {
 
     public func commitCount(_ query: CommitQuery) async throws -> Int {
         var args = ["rev-list", "--count"]
+        if let grep = query.grep, !grep.isEmpty {
+            args += ["--regexp-ignore-case", "--fixed-strings", "--grep=\(grep)"]
+        }
         switch query.scope {
         case .head:           args.append("HEAD")
         case .branch(let b):  args.append(b)
@@ -131,6 +134,22 @@ public actor CLIGitBackend: GitBackend {
         let data = try await runner.runChecked(args, in: query.repo.rootURL)
         let str = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return Int(str) ?? 0
+    }
+
+    public func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? {
+        let trimmed = rev.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        // `<rev>^{commit}` peels tags/refs to the commit they ultimately denote and fails for
+        // non-commit objects. `--verify --quiet` resolves only an *unambiguous* revision (a unique
+        // SHA prefix, an exact ref name, a revision expression) and exits non-zero otherwise — so a
+        // query counts as an exact match only when git itself can pin it to exactly one commit.
+        // An ambiguous short SHA therefore falls through to the message search rather than guessing.
+        let result = try await runner.run(
+            ["rev-parse", "--verify", "--quiet", "\(trimmed)^{commit}"], in: repo.rootURL)
+        guard result.exitCode == 0 else { return nil }
+        let sha = String(decoding: result.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sha.isEmpty ? nil : sha
     }
 
     public func refs(for repo: Repository) async throws -> RefSnapshot {

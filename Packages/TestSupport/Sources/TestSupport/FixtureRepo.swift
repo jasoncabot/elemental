@@ -29,7 +29,9 @@ public final class FixtureRepo {
     }
 
     public static func discoverGit() -> String {
-        for candidate in ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"] {
+        // Prefer homebrew/user-installed git over the Xcode-bundled /usr/bin/git stub —
+        // Apple's bundled git often lags upstream by one or two major versions.
+        for candidate in ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"] {
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         return "/usr/bin/git"
@@ -142,7 +144,10 @@ public final class FixtureRepo {
     public func addOrphanWorktree(branch: String) throws -> URL {
         let wtURL = url.deletingLastPathComponent()
             .appendingPathComponent("wt-orphan-\(UUID().uuidString)")
-        try run(["worktree", "add", "--orphan", "-b", branch, "-q", wtURL.path])
+        let code = try run(["worktree", "add", "--orphan", "-b", branch, "-q", wtURL.path])
+        guard code == 0 else {
+            throw FixtureError.commandFailed("git worktree add --orphan exited \(code)")
+        }
         return wtURL
     }
 
