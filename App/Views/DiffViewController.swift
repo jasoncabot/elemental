@@ -36,6 +36,11 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private let outerContent = FlippedView()
     private let emptyLabel = NSTextField(labelWithString: "Select a commit to read its changes")
     private let floatingHunkHeader = FloatingHunkHeaderView()
+    /// Draggable divider between the two halves of the side-by-side view. Hidden in unified mode.
+    private let sideDividerHandle = SideBySideDividerView()
+    private var sideDividerLeading: NSLayoutConstraint!
+    /// Split point as a fraction of the viewport width; shared by every side-by-side row.
+    private var sideSplitFraction: CGFloat = 0.5
 
     private var hunkSections: [HunkSectionView] = []
     /// Shown in place of hunk sections for noise-collapsed or binary files.
@@ -183,10 +188,17 @@ final class DiffViewController: NSViewController, PresenterObserving {
             self.outerContent.layoutSubtreeIfNeeded()
             self.updateFloatingHeader()
         }
+        sideDividerHandle.translatesAutoresizingMaskIntoConstraints = false
+        sideDividerHandle.isHidden = true
+        sideDividerHandle.onDragToX = { [weak self] x in self?.dragSideDivider(toContainerX: x) }
         container.addSubview(header)
         container.addSubview(outerScroll)
+        container.addSubview(sideDividerHandle)
         container.addSubview(emptyLabel)
         container.addSubview(floatingHunkHeader)
+
+        sideDividerLeading = sideDividerHandle.leadingAnchor.constraint(
+            equalTo: container.leadingAnchor).id("DiffView.sideDivider.leading")
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
@@ -218,6 +230,14 @@ final class DiffViewController: NSViewController, PresenterObserving {
                 .id("DiffView.floatingHunkHeader.trailing"),
             floatingHunkHeader.heightAnchor.constraint(equalToConstant: Theme.Metric.hunkHeaderHeight)
                 .id("DiffView.floatingHunkHeader.height"),
+
+            sideDividerLeading,
+            sideDividerHandle.topAnchor.constraint(equalTo: outerScroll.topAnchor)
+                .id("DiffView.sideDivider.top"),
+            sideDividerHandle.bottomAnchor.constraint(equalTo: outerScroll.bottomAnchor)
+                .id("DiffView.sideDivider.bottom"),
+            sideDividerHandle.widthAnchor.constraint(equalToConstant: SideBySideDividerView.width)
+                .id("DiffView.sideDivider.width"),
         ])
 
         view = container
@@ -226,6 +246,33 @@ final class DiffViewController: NSViewController, PresenterObserving {
     override func viewDidLayout() {
         super.viewDidLayout()
         updateAllContentColumnWidths()
+        repositionSideDivider()
+    }
+
+    // MARK: - Side-by-side divider
+
+    /// Keeps the divider handle at `sideSplitFraction` of the viewport width.
+    private func repositionSideDivider() {
+        let w = outerScroll.bounds.width
+        guard w > 0 else { return }
+        sideDividerLeading.constant = sideSplitFraction * w - SideBySideDividerView.width / 2
+    }
+
+    /// Live drag: convert the handle's x (in the diff container) to a fraction and re-balance.
+    private func dragSideDivider(toContainerX x: CGFloat) {
+        let w = outerScroll.bounds.width
+        guard w > 0 else { return }
+        let frac = min(0.8, max(0.2, x / w))
+        guard abs(frac - sideSplitFraction) > 0.001 else { return }
+        sideSplitFraction = frac
+        repositionSideDivider()
+        for section in hunkSections { section.applySplitFraction(frac) }
+    }
+
+    private func updateSideDividerVisibility() {
+        let show = sideBySide && !hunkSections.isEmpty
+        sideDividerHandle.isHidden = !show
+        if show { repositionSideDivider() }
     }
 
     // MARK: - PresenterObserving
@@ -326,6 +373,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         installSections(newSections)
         updateAllContentColumnWidths()
         updateFloatingHeader()
+        updateSideDividerVisibility()
     }
 
     // MARK: - Section management
@@ -342,6 +390,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         noticeView?.removeFromSuperview()
         noticeView = nil
         floatingHunkHeader.isHidden = true
+        updateSideDividerVisibility()
     }
 
     private func showImagePreview(for file: DiffFile) {
@@ -361,6 +410,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         NSLayoutConstraint.deactivate(sectionStackConstraints)
         sectionStackConstraints = []
         noticeView?.removeFromSuperview()
+        updateSideDividerVisibility()
 
         let preview = BinaryImagePreviewView()
         preview.translatesAutoresizingMaskIntoConstraints = false
@@ -885,6 +935,7 @@ extension DiffViewController {
         let cell = (table.makeView(withIdentifier: id, owner: self) as? SplitCellView)
             ?? SplitCellView(identifier: id)
         cell.configure(left: left, right: right)
+        cell.setSplitFraction(sideSplitFraction)
         return cell
     }
 
@@ -1004,6 +1055,49 @@ private final class HorizontalScrollView: NSScrollView {
         }
     }
 
+}
+
+// MARK: - Side-by-side draggable divider
+
+/// A thin, full-height handle the user drags to rebalance the two halves of the side-by-side
+/// view. Reports its centre x (in the diff container's coordinates) while dragging.
+@objc(DiffSideBySideDividerView)
+private final class SideBySideDividerView: NSView {
+    static let width: CGFloat = 11
+
+    var onDragToX: ((CGFloat) -> Void)?
+
+    private let line = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        line.wantsLayer = true
+        line.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(line)
+        NSLayoutConstraint.activate([
+            line.centerXAnchor.constraint(equalTo: centerXAnchor),
+            line.topAnchor.constraint(equalTo: topAnchor),
+            line.bottomAnchor.constraint(equalTo: bottomAnchor),
+            line.widthAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        line.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
+
+    // Drag anywhere on the handle; report the location in the superview's (container's) space.
+    override func mouseDragged(with event: NSEvent) {
+        guard let superview else { return }
+        onDragToX?(superview.convert(event.locationInWindow, from: nil).x)
+    }
+    // Swallow mouseDown so the drag begins cleanly.
+    override func mouseDown(with event: NSEvent) {}
 }
 
 // MARK: - Row background

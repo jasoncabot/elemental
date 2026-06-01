@@ -555,59 +555,62 @@ private final class TimelineRowView: NSTableRowView {
 
 // MARK: - More control
 
-// NSButton fights contentTintColor and attributedTitle in selection contexts, so replace it
-// with a minimal NSView: NSTextField + NSImageView give direct, reliable color control.
+// NSButton fights colours in selection contexts. NSImageView.contentTintColor is silently
+// overridden to white by AppKit's emphasis pass even for template images. A single NSTextField
+// with an NSAttributedString keeps text and chevron in one run so selection colour is always
+// consistent. baselineOffset on the chevron portion corrects the optical misalignment that
+// comes from the glyph's built-in descender.
 private final class MoreControl: NSView {
     var action: (() -> Void)?
 
     private let label = NSTextField(labelWithString: "")
-    private let chevron = NSImageView()
 
     var tintColor: NSColor = .tertiaryLabelColor {
-        didSet {
-            label.textColor = tintColor
-            chevron.contentTintColor = tintColor
-        }
+        didSet { rebuildAttributedString() }
     }
 
-    var title: String = "" { didSet { label.stringValue = title } }
+    var title: String = "more " { didSet { rebuildAttributedString() } }
 
-    var image: NSImage? {
-        didSet {
-            // Template so the chevron honours contentTintColor and matches the label colour;
-            // otherwise the caret can render in a default shade that mismatches the "more" text.
-            image?.isTemplate = true
-            chevron.image = image
-        }
-    }
-
-    var symbolConfiguration: NSImage.SymbolConfiguration? {
-        didSet { chevron.symbolConfiguration = symbolConfiguration }
-    }
+    /// Drives the chevron glyph: pass "chevron.up" or "chevron.down".
+    var chevronName: String = "chevron.down" { didSet { rebuildAttributedString() } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        label.font = Theme.Font.caption
-        label.textColor = .tertiaryLabelColor
+        label.isEditable = false
+        label.isSelectable = false
+        label.isBordered = false
+        label.drawsBackground = false
         label.setContentHuggingPriority(.required, for: .horizontal)
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        chevron.contentTintColor = .tertiaryLabelColor
-        chevron.setContentHuggingPriority(.required, for: .horizontal)
-
-        let stack = NSStackView(views: [label, chevron])
-        stack.spacing = 2
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         setContentHuggingPriority(.required, for: .horizontal)
+        rebuildAttributedString()
+    }
+
+    private func rebuildAttributedString() {
+        let chevronGlyph = chevronName == "chevron.up" ? "⌃" : "⌄"
+        let captionFont = Theme.Font.caption
+        let chevronFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let color = tintColor
+
+        let str = NSMutableAttributedString(string: title, attributes: [
+            .font: captionFont,
+            .foregroundColor: color,
+        ])
+        str.append(NSAttributedString(string: chevronGlyph, attributes: [
+            .font: chevronFont,
+            .foregroundColor: color,
+            // Nudge the chevron glyph up to sit on the same optical line as the caption text.
+            .baselineOffset: NSNumber(value: 1.5),
+        ]))
+        label.attributedStringValue = str
     }
 
     @available(*, unavailable)
@@ -616,8 +619,6 @@ private final class MoreControl: NSView {
     override func mouseDown(with event: NSEvent) { action?() }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 
-    // The inner label/chevron would otherwise swallow the click; claim the whole control's area so
-    // a click anywhere on "more"/"less" toggles expansion (previously only Space worked).
     override func hitTest(_ point: NSPoint) -> NSView? {
         bounds.contains(convert(point, from: superview)) ? self : nil
     }
@@ -913,9 +914,7 @@ private final class TimelineCellView: NSTableCellView {
         let canExpand = !body.isEmpty || subjectExceedsTwoLines(subject)
         moreButton.isHidden = !canExpand
         moreButton.title = expanded ? "less " : "more "
-        moreButton.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down",
-                                   accessibilityDescription: expanded ? "Collapse" : "Expand")
-        moreButton.symbolConfiguration = .init(pointSize: 8, weight: .semibold)
+        moreButton.chevronName = expanded ? "chevron.up" : "chevron.down"
 
         updateLayer()
         updateTextColors()
@@ -966,13 +965,24 @@ private final class TimelineCellView: NSTableCellView {
         return ceil(max(height, Theme.Metric.timelineRowHeight))
     }
 
+    // Shared label used only for height probing — never displayed.
+    // NSTextFieldCell.cellSize(forBounds:) uses the same TextKit path as the live labels,
+    // so it accounts for lineFragmentPadding and avoids the CoreText/TextKit split that
+    // makes NSAttributedString.boundingRect diverge from what NSTextField actually renders.
+    private static let measureLabel: NSTextField = {
+        let f = NSTextField(labelWithString: "")
+        f.lineBreakMode = .byWordWrapping
+        f.maximumNumberOfLines = 0
+        f.cell?.usesSingleLineMode = false
+        return f
+    }()
+
     private static func textHeight(_ string: String, font: NSFont, width: CGFloat) -> CGFloat {
         guard !string.isEmpty, width > 0 else { return 0 }
-        let attr = NSAttributedString(string: string, attributes: [.font: font])
-        let rect = attr.boundingRect(
-            with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading])
-        return ceil(rect.height)
+        measureLabel.font = font
+        measureLabel.stringValue = string
+        let bounds = NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
+        return ceil(measureLabel.cell?.cellSize(forBounds: bounds).height ?? 0)
     }
 }
 
