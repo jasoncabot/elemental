@@ -14,8 +14,9 @@ final class RepoBookmarkStore {
     /// Resolved repositories available to the UI. Order is preserved.
     private(set) var repositories: [Repository] = []
 
-    /// Called whenever `repositories` changes so the coordinator can update the sidebar.
-    var onRepositoriesChanged: (() -> Void)?
+    /// Posted on the main thread whenever `repositories` changes. Every window listens so
+    /// repo lists stay in sync regardless of which window mutated the store.
+    static let repositoriesDidChangeNotification = Notification.Name("RepoBookmarkStoreDidChange")
 
     init(backend: any GitBackend) {
         self.backend = backend
@@ -48,7 +49,7 @@ final class RepoBookmarkStore {
         }
         if fresh.count != saved.count { saveBookmarks(fresh) }
         repositories = resolved
-        onRepositoriesChanged?()
+        NotificationCenter.default.post(name: Self.repositoriesDidChangeNotification, object: self)
     }
 
     // MARK: - Drag-in
@@ -73,7 +74,7 @@ final class RepoBookmarkStore {
         }
 
         repositories.append(repo)
-        onRepositoriesChanged?()
+        NotificationCenter.default.post(name: Self.repositoriesDidChangeNotification, object: self)
         return repo
     }
 
@@ -85,7 +86,7 @@ final class RepoBookmarkStore {
         // Rebuild bookmark list from the surviving URLs
         let surviving = repositories.compactMap { makeBookmark(for: $0.rootURL) }
         saveBookmarks(surviving)
-        onRepositoriesChanged?()
+        NotificationCenter.default.post(name: Self.repositoriesDidChangeNotification, object: self)
     }
 
     // MARK: - Bookmark helpers

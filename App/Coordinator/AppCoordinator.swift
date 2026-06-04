@@ -38,10 +38,10 @@ final class AppCoordinator {
 
     // MARK: - Init
 
-    init(backend: any GitBackend, watcher: any RepoWatcher) {
+    init(backend: any GitBackend, watcher: any RepoWatcher, bookmarkStore: RepoBookmarkStore) {
         self.backend = backend
         self.watcher = watcher
-        self.bookmarkStore = RepoBookmarkStore(backend: backend)
+        self.bookmarkStore = bookmarkStore
 
         self.windowController = MainWindowController(
             toolbarController: toolbarController,
@@ -59,8 +59,37 @@ final class AppCoordinator {
             urls.forEach { self?.addRepository(at: $0) }
         }
 
-        bookmarkStore.onRepositoriesChanged = { [weak self] in
-            self?.refreshRepoList()
+        NotificationCenter.default.addObserver(
+            forName: RepoBookmarkStore.repositoriesDidChangeNotification,
+            object: bookmarkStore, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.bookmarksDidChange() }
+        }
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Reconcile this window's UI with the shared store. Drops caches for repos removed in
+    /// another window and switches off if the active repo is gone.
+    private func bookmarksDidChange() {
+        let known = Set(bookmarkStore.repositories.map { $0.rootURL })
+        // Walk the union of every cache so a dropped repo can't leak watcher/branch tasks
+        // through whichever dict happens not to have an entry for it.
+        let cached = Set(timelinePresenters.keys)
+            .union(commitDetailPresenters.keys)
+            .union(workingCopyPresenters.keys)
+            .union(watcherTasks.keys)
+            .union(branchTasks.keys)
+        for url in cached where !known.contains(url) {
+            watcherTasks.removeValue(forKey: url)?.cancel()
+            branchTasks.removeValue(forKey: url)?.cancel()
+            timelinePresenters.removeValue(forKey: url)
+            commitDetailPresenters.removeValue(forKey: url)
+            workingCopyPresenters.removeValue(forKey: url)
+        }
+        refreshRepoList()
+        if let active = activeRepoURL, !known.contains(active) {
+            selectRepo(bookmarkStore.repositories.first?.rootURL)
         }
     }
 
@@ -85,6 +114,22 @@ final class AppCoordinator {
         windowController.toggleTimeline()
     }
 
+    /// Repos this window currently knows about — the snapshot CLIOpenRouter consults to
+    /// decide whether `el <path>` should focus this window.
+    var knownRepoRoots: [URL] { bookmarkStore.repositories.map { $0.rootURL } }
+
+    /// Bring the window forward and switch to the repo at `rootPath` (a string the caller
+    /// got from `knownRepoRoots`, so no fresh canonicalization is needed here). No-ops the
+    /// repo switch when that repo is already active — `el .` against the current window
+    /// shouldn't churn UserDefaults or restart the branch-load task.
+    func focus(repoRoot rootPath: String) {
+        if activeRepoURL?.path != rootPath,
+           let repo = bookmarkStore.repositories.first(where: { $0.rootURL.path == rootPath }) {
+            selectRepo(repo.rootURL)
+        }
+        windowController.window?.makeKeyAndOrderFront(nil)
+    }
+
     func addRepository(at url: URL) {
         pendingAddCount += 1
         Task {
@@ -98,11 +143,11 @@ final class AppCoordinator {
         }
     }
 
-    func start() async {
-        await bookmarkStore.restoreOnLaunch()
-        // If a folder was already opened via `el <path>` / Finder (application(_:open:)), it has
-        // set the active repo and wins — don't override it. If an add is still in flight (the Task
-        // from addRepository hasn't resolved yet), also stand down — it will call selectRepo itself.
+    /// Pick a repo to show in this window. Called after the shared store has restored.
+    /// Stands down if `application(_:open:)` already routed a path here, or if an add is
+    /// still in flight — those paths call `selectRepo` themselves.
+    func start() {
+        refreshRepoList()
         guard activeRepoURL == nil, pendingAddCount == 0 else { return }
         let repos = bookmarkStore.repositories
         let lastActive = UserDefaults.standard.string(forKey: Self.lastActiveRepoKey)

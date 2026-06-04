@@ -1,13 +1,25 @@
 import AppKit
+import AppRouting
 import GitData
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinators: [AppCoordinator] = []
     private var backend: CLIGitBackend?
     private var watcher: FSEventsRepoWatcher?
+    /// Single source of truth for the repo list, shared across every window.
+    private var bookmarkStore: RepoBookmarkStore?
+    /// Becomes true only after `restoreOnLaunch` finishes. URL routing must wait for this
+    /// so `bookmarkStore.add` from a new window can't interleave with restore's final
+    /// `repositories = resolved` assignment and lose the just-added repo.
+    private var storeReady = false
     /// Set by application(_:open:) before the deferred first-window fires, so we skip
     /// opening an empty session-restore window when launched directly via `el <path>`.
     private var openedViaURL = false
+    /// URLs delivered via application(_:open:) before backend/watcher were ready (cold launch
+    /// where the system fires `open` ahead of `applicationDidFinishLaunching`). Drained once
+    /// setup completes — otherwise opening a coordinator would silently no-op and the user
+    /// would see an active app with no window.
+    private var pendingURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpMainMenu()
@@ -18,13 +30,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let watcher = FSEventsRepoWatcher()
+        let store = RepoBookmarkStore(backend: backend)
         self.backend = backend
         self.watcher = watcher
+        self.bookmarkStore = store
 
-        // Defer so application(_:open:) can set openedViaURL first when the app is
-        // cold-launched with a path argument (e.g. `el /some/repo`).
-        DispatchQueue.main.async {
-            if !self.openedViaURL {
+        // Restore the shared store first so any window opened below sees the full list.
+        // Then drain CLI-deferred URLs, or fall back to a session-restore window.
+        Task { @MainActor in
+            await store.restoreOnLaunch()
+            self.storeReady = true
+            if !self.pendingURLs.isEmpty {
+                let urls = self.pendingURLs
+                self.pendingURLs = []
+                self.handleOpen(urls: urls)
+            } else if !self.openedViaURL {
                 self.openNewWindow(restoreSession: true)
             }
             NSApp.activate(ignoringOtherApps: true)
@@ -38,10 +58,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard !urls.isEmpty else { return }
         openedViaURL = true
-        // Always open a dedicated new window for this invocation.
-        openNewWindow(restoreSession: false)
-        if let c = coordinators.last {
-            urls.forEach { c.addRepository(at: $0) }
+        handleOpen(urls: urls)
+    }
+
+    @MainActor
+    private func handleOpen(urls: [URL]) {
+        // CLIOpenRouter is the single tested model for what to do with a batch of URLs.
+        // Build snapshots indexed by array position so we can route the decision back to
+        // the concrete coordinator.
+        let snapshots = coordinators.enumerated().map { i, c in
+            CLIOpenRouter.WindowSnapshot(id: i, repoRoots: c.knownRepoRoots.map { $0.path })
+        }
+        let decision = CLIOpenRouter.route(urls: urls, windows: snapshots, isReady: storeReady)
+        switch decision {
+        case .deferUntilReady(let queued):
+            pendingURLs.append(contentsOf: queued)
+        case .route(let focus, let newWindow):
+            NSApp.activate(ignoringOtherApps: true)
+            for instruction in focus where instruction.windowID < coordinators.count {
+                coordinators[instruction.windowID].focus(repoRoot: instruction.matchedRoot)
+            }
+            guard !newWindow.isEmpty else { return }
+            openNewWindow(restoreSession: false)
+            if let c = coordinators.last {
+                newWindow.forEach { c.addRepository(at: $0) }
+            }
         }
     }
 
@@ -56,8 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func makeNewCoordinator() -> AppCoordinator? {
         MainActor.assumeIsolated {
-            guard let backend, let watcher else { return nil }
-            let c = AppCoordinator(backend: backend, watcher: watcher)
+            guard let backend, let watcher, let store = bookmarkStore else { return nil }
+            let c = AppCoordinator(backend: backend, watcher: watcher, bookmarkStore: store)
             coordinators.append(c)
             guard let window = c.windowController.window else { return c }
             NotificationCenter.default.addObserver(
@@ -81,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             c.windowController.showWindow(nil)
             if restoreSession {
-                Task { @MainActor in await c.start() }
+                c.start()
             }
         }
     }
