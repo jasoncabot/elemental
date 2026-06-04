@@ -902,68 +902,218 @@ private final class FileRowView: NSTableCellView {
 
 /// Shows the reviewed commit's message — subject, body, metadata — plus any git note, so the
 /// intent behind the change sits alongside the files it touched. Pure git metadata; no AI.
+///
+/// The narrative (subject + body + note) is the centerpiece here: in an agentic-changes
+/// workflow people spend more time reading the author's prose than reading the diff itself,
+/// so body text reads in the primary label color with comfortable line height, and the
+/// SHA / author / date demote themselves into a compact identity strip.
 @objc(CommitSummaryView)
 private final class CommitSummaryView: NSView {
     private let subjectLabel = NSTextField(labelWithString: "")
-    private let metaLabel = NSTextField(labelWithString: "")
     private let bodyLabel = NSTextField(labelWithString: "")
-    private let noteLabel = NSTextField(labelWithString: "")
+    private let filesLabel = NSTextField(labelWithString: "")
     private let statsLabel = NSTextField(labelWithString: "")
+
+    private let identityRow = NSStackView()
+    private let authorDot = AuthorDot()
+    private let authorLabel = NSTextField(labelWithString: "")
+    private let dateLabel = NSTextField(labelWithString: "")
+    private let shaPill = ShaPill()
+
+    private let noteBlock = NSView()
+    private let noteBar = NSView()
+    private let noteCaption = NSTextField(labelWithString: "NOTE")
+    private let noteBody = NSTextField(labelWithString: "")
+
     private let stack = NSStackView()
+    private let statsDivider = NSBox()
+    private let statsRow = NSStackView()
     private let divider = NSBox()
-    private static let hInset: CGFloat = 16
+
+    private static let hInset: CGFloat = 20
+    private static let topInset: CGFloat = 16
+    private static let bottomInset: CGFloat = 12
+
+    // Subject reads as a real headline; body reads as readable prose. Tight on the subject,
+    // loose on the body — the body is what people are here to read.
+    private static let subjectFont = NSFont.systemFont(ofSize: 16, weight: .semibold)
+    private static let bodyFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+    private static let subjectLineMultiple: CGFloat = 1.12
+    private static let bodyLineMultiple: CGFloat = 1.42
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
-        subjectLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        subjectLabel.maximumNumberOfLines = 2
+        // Subject: a real headline. Tight tracking, generous size, primary text.
+        subjectLabel.font = Self.subjectFont
+        subjectLabel.textColor = .labelColor
+        subjectLabel.maximumNumberOfLines = 3
         subjectLabel.lineBreakMode = .byTruncatingTail
+        subjectLabel.allowsDefaultTighteningForTruncation = true
+        subjectLabel.cell?.wraps = true
 
-        metaLabel.font = Theme.Font.secondary
-        metaLabel.textColor = .secondaryLabelColor
-        metaLabel.lineBreakMode = .byTruncatingTail
+        // Body: PRIMARY text color, system body size, generous line-height for sustained reading.
+        bodyLabel.font = Self.bodyFont
+        bodyLabel.textColor = .labelColor
+        bodyLabel.maximumNumberOfLines = 12
+        bodyLabel.lineBreakMode = .byWordWrapping
+        bodyLabel.cell?.wraps = true
+        bodyLabel.cell?.isScrollable = false
 
-        bodyLabel.font = Theme.Font.secondary
-        bodyLabel.textColor = .secondaryLabelColor
-        bodyLabel.maximumNumberOfLines = 6
-        bodyLabel.lineBreakMode = .byTruncatingTail
+        // Identity strip: ●  Author Name    2 days ago                  d062863
+        authorLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        authorLabel.textColor = .labelColor
+        authorLabel.lineBreakMode = .byTruncatingTail
+        authorLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
-        noteLabel.font = Theme.Font.secondary
-        noteLabel.textColor = .secondaryLabelColor
-        noteLabel.maximumNumberOfLines = 4
-        noteLabel.lineBreakMode = .byTruncatingTail
+        dateLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        dateLabel.textColor = .secondaryLabelColor
+        dateLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
-        statsLabel.font = Theme.Font.caption
-        statsLabel.textColor = .tertiaryLabelColor
+        identityRow.orientation = .horizontal
+        identityRow.alignment = .centerY
+        identityRow.spacing = 8
+        identityRow.translatesAutoresizingMaskIntoConstraints = false
+        identityRow.addArrangedSubview(authorDot)
+        identityRow.setCustomSpacing(8, after: authorDot)
+        identityRow.addArrangedSubview(authorLabel)
+        identityRow.setCustomSpacing(10, after: authorLabel)
+        identityRow.addArrangedSubview(dateLabel)
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        identityRow.addArrangedSubview(spacer)
+        identityRow.addArrangedSubview(shaPill)
 
+        // Note: editorial annotation with a colored left bar + small caption + readable body.
+        noteBlock.translatesAutoresizingMaskIntoConstraints = false
+        noteBar.wantsLayer = true
+        noteBar.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.65).cgColor
+        noteBar.layer?.cornerRadius = 1.5
+        noteBar.translatesAutoresizingMaskIntoConstraints = false
+
+        noteCaption.font = .systemFont(ofSize: 10, weight: .bold)
+        noteCaption.textColor = .secondaryLabelColor
+        noteCaption.stringValue = "NOTE"
+        // Tracked-out small caps feel — a tiny letter-spaced caption.
+        noteCaption.attributedStringValue = NSAttributedString(
+            string: "NOTE",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .kern: 1.2,
+            ])
+        noteCaption.translatesAutoresizingMaskIntoConstraints = false
+
+        noteBody.font = Self.bodyFont
+        noteBody.textColor = .labelColor
+        noteBody.maximumNumberOfLines = 8
+        noteBody.lineBreakMode = .byWordWrapping
+        noteBody.cell?.wraps = true
+        noteBody.cell?.isScrollable = false
+        noteBody.translatesAutoresizingMaskIntoConstraints = false
+
+        noteBlock.addSubview(noteBar)
+        noteBlock.addSubview(noteCaption)
+        noteBlock.addSubview(noteBody)
+        NSLayoutConstraint.activate([
+            noteBar.leadingAnchor.constraint(equalTo: noteBlock.leadingAnchor)
+                .id("CommitSummary.noteBar.leading"),
+            noteBar.topAnchor.constraint(equalTo: noteBlock.topAnchor, constant: 2)
+                .id("CommitSummary.noteBar.top"),
+            noteBar.bottomAnchor.constraint(equalTo: noteBlock.bottomAnchor, constant: -2)
+                .id("CommitSummary.noteBar.bottom"),
+            noteBar.widthAnchor.constraint(equalToConstant: 3)
+                .id("CommitSummary.noteBar.width"),
+            noteCaption.leadingAnchor.constraint(equalTo: noteBar.trailingAnchor, constant: 12)
+                .id("CommitSummary.noteCaption.leading"),
+            noteCaption.topAnchor.constraint(equalTo: noteBlock.topAnchor)
+                .id("CommitSummary.noteCaption.top"),
+            noteCaption.trailingAnchor.constraint(lessThanOrEqualTo: noteBlock.trailingAnchor)
+                .id("CommitSummary.noteCaption.trailing"),
+            noteBody.leadingAnchor.constraint(equalTo: noteCaption.leadingAnchor)
+                .id("CommitSummary.noteBody.leading"),
+            noteBody.topAnchor.constraint(equalTo: noteCaption.bottomAnchor, constant: 4)
+                .id("CommitSummary.noteBody.top"),
+            noteBody.trailingAnchor.constraint(equalTo: noteBlock.trailingAnchor)
+                .id("CommitSummary.noteBody.trailing"),
+            noteBody.bottomAnchor.constraint(equalTo: noteBlock.bottomAnchor)
+                .id("CommitSummary.noteBody.bottom"),
+        ])
+
+        // Footer: hairline divider, then a small row — files left, +adds/−dels right.
+        statsDivider.boxType = .separator
+        statsDivider.translatesAutoresizingMaskIntoConstraints = false
+
+        filesLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        filesLabel.textColor = .tertiaryLabelColor
+        statsLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        statsLabel.alignment = .right
+
+        statsRow.orientation = .horizontal
+        statsRow.alignment = .firstBaseline
+        statsRow.spacing = 8
+        statsRow.translatesAutoresizingMaskIntoConstraints = false
+        statsRow.addArrangedSubview(filesLabel)
+        let statsSpacer = NSView()
+        statsSpacer.translatesAutoresizingMaskIntoConstraints = false
+        statsSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statsRow.addArrangedSubview(statsSpacer)
+        statsRow.addArrangedSubview(statsLabel)
+
+        // Vertical stack: subject → identity → body → note. Footer pins below independently.
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 3
+        stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let labelNames = ["subject", "meta", "body", "note", "stats"]
-        for (label, name) in zip([subjectLabel, metaLabel, bodyLabel, noteLabel, statsLabel], labelNames) {
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            stack.addArrangedSubview(label)
-            label.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        for (view, name) in zip(
+            [subjectLabel, identityRow, bodyLabel, noteBlock],
+            ["subject", "identity", "body", "note"]
+        ) {
+            view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor)
                 .id("CommitSummary.\(name).fillWidth")
                 .isActive = true
         }
+        // Rhythm: subject and identity sit close; body breathes; note breathes more.
+        stack.setCustomSpacing(10, after: subjectLabel)
+        stack.setCustomSpacing(16, after: identityRow)
+        stack.setCustomSpacing(16, after: bodyLabel)
 
         divider.boxType = .separator
         divider.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(stack)
+        addSubview(statsDivider)
+        addSubview(statsRow)
         addSubview(divider)
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10)
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: Self.topInset)
                 .id("CommitSummary.stack.top"),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset)
                 .id("CommitSummary.stack.leading"),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset)
                 .id("CommitSummary.stack.trailing"),
-            stack.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -10)
-                .id("CommitSummary.stack.bottom"),
+
+            statsDivider.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: Self.bottomInset + 2)
+                .id("CommitSummary.statsDivider.top"),
+            statsDivider.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset)
+                .id("CommitSummary.statsDivider.leading"),
+            statsDivider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset)
+                .id("CommitSummary.statsDivider.trailing"),
+
+            statsRow.topAnchor.constraint(equalTo: statsDivider.bottomAnchor, constant: 8)
+                .id("CommitSummary.statsRow.top"),
+            statsRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.hInset)
+                .id("CommitSummary.statsRow.leading"),
+            statsRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset)
+                .id("CommitSummary.statsRow.trailing"),
+            statsRow.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -Self.bottomInset)
+                .id("CommitSummary.statsRow.bottom"),
+
             divider.leadingAnchor.constraint(equalTo: leadingAnchor)
                 .id("CommitSummary.divider.leading"),
             divider.trailingAnchor.constraint(equalTo: trailingAnchor)
@@ -979,16 +1129,72 @@ private final class CommitSummaryView: NSView {
     override func layout() {
         super.layout()
         // Multiline labels need an explicit wrapping width to compute their height.
-        let width = bounds.width - Self.hInset * 2
-        for label in [subjectLabel, bodyLabel, noteLabel] { label.preferredMaxLayoutWidth = width }
+        let bodyWidth = bounds.width - Self.hInset * 2
+        subjectLabel.preferredMaxLayoutWidth = bodyWidth
+        bodyLabel.preferredMaxLayoutWidth = bodyWidth
+        // Note body sits indented past the accent bar (3pt) + gap (12pt).
+        noteBody.preferredMaxLayoutWidth = bodyWidth - 15
     }
 
-    func setStats(_ text: String) { statsLabel.stringValue = text }
+    // MARK: Attributed-string helpers — used so multi-line subject/body get proper line-height.
+
+    private static func paragraph(lineHeightMultiple: CGFloat,
+                                  lineBreak: NSLineBreakMode) -> NSParagraphStyle {
+        let p = NSMutableParagraphStyle()
+        p.lineHeightMultiple = lineHeightMultiple
+        // Word-wrap on prose so multi-line bodies actually wrap instead of truncating on line 1;
+        // the field's maximumNumberOfLines still caps total height.
+        p.lineBreakMode = lineBreak
+        return p
+    }
+
+    private static func styled(_ text: String, font: NSFont, color: NSColor,
+                               lineHeightMultiple: CGFloat,
+                               lineBreak: NSLineBreakMode = .byWordWrapping) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: color,
+            .paragraphStyle: paragraph(lineHeightMultiple: lineHeightMultiple, lineBreak: lineBreak),
+        ])
+    }
+
+    func setStats(_ text: String) {
+        // Caller hands us "12 FILES   +234  −56" or "CHANGES".
+        // We split on the 3-space gap that the formatter uses; left side is the file count,
+        // right side gets +/− tokens colored.
+        let parts = text.components(separatedBy: "   ")
+        if parts.count >= 2 {
+            filesLabel.stringValue = parts[0]
+            statsLabel.attributedStringValue = Self.coloredStats(parts.dropFirst().joined(separator: " "))
+        } else {
+            filesLabel.stringValue = text
+            statsLabel.attributedStringValue = NSAttributedString()
+        }
+    }
+
+    private static func coloredStats(_ text: String) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        for token in text.split(separator: " ").map(String.init) {
+            if result.length > 0 { result.append(NSAttributedString(string: "  ")) }
+            let color: NSColor
+            if token.hasPrefix("+") { color = Theme.Color.addStat }
+            else if token.hasPrefix("−") || token.hasPrefix("-") { color = Theme.Color.delStat }
+            else { color = .tertiaryLabelColor }
+            result.append(NSAttributedString(string: token, attributes: [
+                .font: font, .foregroundColor: color,
+            ]))
+        }
+        return result
+    }
 
     func configure(header: DetailHeader) {
         switch header {
         case .none:
-            [subjectLabel, metaLabel, bodyLabel, noteLabel].forEach { $0.isHidden = true }
+            subjectLabel.isHidden = true
+            identityRow.isHidden = true
+            bodyLabel.isHidden = true
+            noteBlock.isHidden = true
         case .commit(let commit, let note):
             configureCommit(commit, note: note)
         case .workingCopy(let branch, let staged, let unstaged, let untracked, let prepared):
@@ -1002,67 +1208,169 @@ private final class CommitSummaryView: NSView {
     private func configureWorkingCopy(branch: String?, staged: Int, unstaged: Int,
                                       untracked: Int, prepared: String?) {
         subjectLabel.isHidden = false
-        subjectLabel.stringValue = "Uncommitted Changes"
-        subjectLabel.textColor = .labelColor
+        subjectLabel.attributedStringValue = Self.styled(
+            "Uncommitted Changes", font: Self.subjectFont,
+            color: .labelColor, lineHeightMultiple: Self.subjectLineMultiple)
 
-        var parts: [String] = []
-        if let branch { parts.append("⎇ \(branch)") }
-        parts.append("\(staged) staged")
-        parts.append("\(unstaged) unstaged")
-        if untracked > 0 { parts.append("\(untracked) untracked") }
-        metaLabel.isHidden = false
-        metaLabel.stringValue = parts.joined(separator: " · ")
-        metaLabel.toolTip = nil
+        identityRow.isHidden = false
+        authorDot.isHidden = true
+        if let branch {
+            authorLabel.stringValue = "⎇  \(branch)"
+            authorLabel.isHidden = false
+        } else {
+            authorLabel.isHidden = true
+        }
+        var tally: [String] = ["\(staged) staged", "\(unstaged) unstaged"]
+        if untracked > 0 { tally.append("\(untracked) untracked") }
+        dateLabel.stringValue = tally.joined(separator: " · ")
+        shaPill.isHidden = true
 
         let draft = (prepared ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        bodyLabel.isHidden = draft.isEmpty
-        bodyLabel.stringValue = draft
-        bodyLabel.toolTip = draft.isEmpty ? nil : draft
+        if draft.isEmpty {
+            bodyLabel.isHidden = true
+            bodyLabel.toolTip = nil
+        } else {
+            bodyLabel.isHidden = false
+            bodyLabel.attributedStringValue = Self.styled(
+                draft, font: Self.bodyFont, color: .labelColor,
+                lineHeightMultiple: Self.bodyLineMultiple)
+            bodyLabel.toolTip = draft
+        }
 
-        noteLabel.isHidden = true
-        noteLabel.toolTip = nil
+        noteBlock.isHidden = true
         needsLayout = true
     }
 
     private func configureCommit(_ commit: Commit?, note: CommitDetailPresenter.NoteState) {
         guard let commit else {
-            [subjectLabel, metaLabel, bodyLabel, noteLabel].forEach { $0.isHidden = true }
+            subjectLabel.isHidden = true
+            identityRow.isHidden = true
+            bodyLabel.isHidden = true
+            noteBlock.isHidden = true
             return
         }
         subjectLabel.isHidden = false
-        metaLabel.isHidden = false
+        identityRow.isHidden = false
 
         if commit.subject.isEmpty {
-            subjectLabel.stringValue = "(no commit message)"
-            subjectLabel.textColor = .tertiaryLabelColor
+            subjectLabel.attributedStringValue = Self.styled(
+                "(no commit message)", font: Self.subjectFont,
+                color: .tertiaryLabelColor, lineHeightMultiple: Self.subjectLineMultiple)
         } else {
-            subjectLabel.stringValue = commit.subject
-            subjectLabel.textColor = .labelColor
+            subjectLabel.attributedStringValue = Self.styled(
+                commit.subject, font: Self.subjectFont,
+                color: .labelColor, lineHeightMultiple: Self.subjectLineMultiple)
         }
 
-        metaLabel.stringValue =
-            "\(commit.author.name) • \(RelativeDate.short(commit.authorDate)) • \(commit.sha.prefix(7))"
-        metaLabel.toolTip = RelativeDate.exact(commit.authorDate)
+        authorDot.isHidden = false
+        authorDot.tint = Self.authorTint(for: commit.author.name)
+        authorLabel.isHidden = false
+        authorLabel.stringValue = commit.author.name
+        dateLabel.stringValue = RelativeDate.short(commit.authorDate)
+        dateLabel.toolTip = RelativeDate.exact(commit.authorDate)
+        shaPill.isHidden = false
+        shaPill.text = String(commit.sha.prefix(7))
+        shaPill.toolTip = commit.sha
 
         let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        bodyLabel.isHidden = body.isEmpty
-        bodyLabel.stringValue = body
-        bodyLabel.toolTip = body.isEmpty ? nil : body
+        if body.isEmpty {
+            bodyLabel.isHidden = true
+            bodyLabel.toolTip = nil
+        } else {
+            bodyLabel.isHidden = false
+            bodyLabel.attributedStringValue = Self.styled(
+                body, font: Self.bodyFont, color: .labelColor,
+                lineHeightMultiple: Self.bodyLineMultiple)
+            bodyLabel.toolTip = body
+        }
 
         // Only a loaded, non-empty note shows; loading and unavailable both stay hidden.
         if case .loaded(let text) = note,
            case let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmed.isEmpty {
-            noteLabel.isHidden = false
-            noteLabel.stringValue = "🗒 \(trimmed)"
-            noteLabel.toolTip = trimmed
+            noteBlock.isHidden = false
+            noteBody.attributedStringValue = Self.styled(
+                trimmed, font: Self.bodyFont, color: .labelColor,
+                lineHeightMultiple: Self.bodyLineMultiple)
+            noteBody.toolTip = trimmed
         } else {
-            noteLabel.isHidden = true
-            noteLabel.toolTip = nil
+            noteBlock.isHidden = true
+            noteBody.toolTip = nil
         }
 
         needsLayout = true
     }
+
+    /// Deterministic color per author so the same person always gets the same dot —
+    /// gives quick visual identity in long timelines without needing fetched avatars.
+    private static let authorPalette: [NSColor] = [
+        .systemBlue, .systemPurple, .systemTeal, .systemPink,
+        .systemIndigo, .systemGreen, .systemOrange, .systemRed,
+    ]
+    private static func authorTint(for name: String) -> NSColor {
+        let hash = name.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
+        return authorPalette[abs(hash) % authorPalette.count]
+    }
+}
+
+/// Small colored dot next to the author name — visual identity for the commit's author.
+private final class AuthorDot: NSView {
+    var tint: NSColor = .systemBlue {
+        didSet { layer?.backgroundColor = tint.withAlphaComponent(0.9).cgColor }
+    }
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 4.5
+        layer?.backgroundColor = tint.withAlphaComponent(0.9).cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 9).id("AuthorDot.width"),
+            heightAnchor.constraint(equalToConstant: 9).id("AuthorDot.height"),
+        ])
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+/// Monospaced 7-char SHA in a subtle pill. Borderless fill so it reads as a tag, not a button.
+private final class ShaPill: NSView {
+    private let label = NSTextField(labelWithString: "")
+    var text: String = "" {
+        didSet {
+            label.attributedStringValue = NSAttributedString(string: text, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .kern: 0.2,
+            ])
+            invalidateIntrinsicContentSize()
+        }
+    }
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.tertiaryLabelColor
+            .withAlphaComponent(0.10).cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7)
+                .id("ShaPill.label.leading"),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7)
+                .id("ShaPill.label.trailing"),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 2)
+                .id("ShaPill.label.top"),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
+                .id("ShaPill.label.bottom"),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 // MARK: - Outline view with context menu support
