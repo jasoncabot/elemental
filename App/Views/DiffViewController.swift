@@ -45,8 +45,9 @@ final class DiffViewController: NSViewController, PresenterObserving {
     private var hunkSections: [HunkSectionView] = []
     /// Shown in place of hunk sections for noise-collapsed or binary files.
     private var noticeView: NSView?
-    /// Maps each inner NSTableView → its HunkSectionView for data source lookups.
-    private var tableToSection: [NSTableView: HunkSectionView] = [:]
+    /// Coordinates selection across all hunk content views — clears siblings when a new
+    /// selection begins and extends selections across hunk boundaries during a drag.
+    private let selectionCoordinator = DiffSelectionCoordinator()
     /// The stacking constraints that pin sections top-to-bottom inside outerContent.
     /// Deactivated and replaced on every rebuild to avoid duplicates.
     private var sectionStackConstraints: [NSLayoutConstraint] = []
@@ -366,7 +367,6 @@ final class DiffViewController: NSViewController, PresenterObserving {
                                       contentMinWidth: contentMinWidth,
                                       gutterWidth: gw)
             section.isCollapsed = collapsedHunks.contains(i)
-            section.configureSideBySide(sideBySide)
             newSections.append(section)
         }
 
@@ -384,7 +384,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         currentImagePreviewID = nil
         hunkSections.forEach { $0.removeFromSuperview() }
         hunkSections = []
-        tableToSection = [:]
+        selectionCoordinator.views = []
         NSLayoutConstraint.deactivate(sectionStackConstraints)
         sectionStackConstraints = []
         noticeView?.removeFromSuperview()
@@ -406,7 +406,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
         imageFetchTask = nil
         hunkSections.forEach { $0.removeFromSuperview() }
         hunkSections = []
-        tableToSection = [:]
+        selectionCoordinator.views = []
         NSLayoutConstraint.deactivate(sectionStackConstraints)
         sectionStackConstraints = []
         noticeView?.removeFromSuperview()
@@ -470,26 +470,24 @@ final class DiffViewController: NSViewController, PresenterObserving {
         if let existing = hunkSections.first(where: { $0.hunkIndex == index }) {
             section = existing
         } else {
-            section = HunkSectionView(hunkIndex: index, dataSource: self, delegate: self)
+            section = HunkSectionView(hunkIndex: index)
             section.onToggle = { [weak self] in self?.toggleHunk(index) }
-            tableToSection[section.innerTable] = section
         }
-        section.rows = rows
-        section.contentMinWidth = contentMinWidth
+        // Mode must precede rows so the right content view(s) exist before we push data in.
+        section.configureSideBySide(sideBySide)
         section.gutterWidth = gutterWidth
+        section.contentMinWidth = contentMinWidth
         section.headerText = text
-        section.reloadTable()
+        section.rows = rows
         return section
     }
 
     private func installSections(_ sections: [HunkSectionView]) {
         // Drop sections that are no longer needed.
         let removed = Set(hunkSections).subtracting(sections)
-        removed.forEach {
-            $0.removeFromSuperview()
-            tableToSection.removeValue(forKey: $0.innerTable)
-        }
+        removed.forEach { $0.removeFromSuperview() }
         hunkSections = sections
+        selectionCoordinator.views = sections.flatMap { $0.contentViews }
 
         // Always rebuild the vertical stacking chain from scratch to avoid duplicates.
         NSLayoutConstraint.deactivate(sectionStackConstraints)
@@ -596,10 +594,13 @@ final class DiffViewController: NSViewController, PresenterObserving {
 
 // MARK: - Per-hunk section view
 
+/// Per-hunk section: a header strip plus an inner scroll view that hosts one (unified) or two
+/// (side-by-side) `DiffHunkContentView`s. The outer scroll view, sticky header, and collapsing
+/// all operate on the section's frame — they don't care what's inside, so they survived the
+/// move away from NSTableView.
 @objc(HunkSectionView)
 private final class HunkSectionView: NSView {
     let hunkIndex: Int
-    var rows: [HunkRow] = []
     var contentMinWidth: CGFloat = 0
     var onToggle: (() -> Void)?
 
@@ -614,37 +615,47 @@ private final class HunkSectionView: NSView {
         }
     }
 
-    /// True when the content is wider than the viewport, so a horizontal scroller is shown.
-    /// Under the "always show scrollbars" system setting that scroller is *legacy*-styled and
-    /// eats height at the bottom of the scroll view — we add it back so the last line isn't
-    /// clipped and the table doesn't scroll vertically by the scroller's thickness.
-    private var hasHorizontalOverflow = false
-    private var sideBySide = false
-
-    private(set) var innerTable: NSTableView
-    let innerScroll: HorizontalScrollView
-    private let headerLabel: NSTextField
-    private let headerBg: NSView
-    private let oldCol: NSTableColumn
-    private let newCol: NSTableColumn
-    private let innerContentCol: NSTableColumn
-    private var innerHeightConstraint: NSLayoutConstraint!
+    var rows: [HunkRow] = [] {
+        didSet { applyRowsToContent() }
+    }
 
     var gutterWidth: CGFloat = 32 {
         didSet {
-            guard abs(oldCol.width - gutterWidth) > 0.5 else { return }
-            for col in [oldCol, newCol] {
-                col.width = gutterWidth; col.minWidth = gutterWidth; col.maxWidth = gutterWidth
-            }
+            guard abs(gutterWidth - oldValue) > 0.5 else { return }
+            applyColumnLayouts()
         }
     }
 
-    private var rowsHeight: CGFloat {
-        CGFloat(rows.count) * Theme.Metric.diffLineHeight
+    let innerScroll: HorizontalScrollView
+    private let headerLabel: NSTextField
+    private let headerBg: NSView
+    private let documentContainer = FlippedView()
+    private var documentWidthConstraint: NSLayoutConstraint!
+    private var documentHeightConstraint: NSLayoutConstraint!
+    private var innerHeightConstraint: NSLayoutConstraint!
+
+    /// Unified-mode content view. Non-nil exactly when `sideBySide == false`.
+    private var unifiedView: DiffHunkContentView?
+    /// Side-by-side left/right pair. Non-nil exactly when `sideBySide == true`.
+    private var leftView: DiffHunkContentView?
+    private var rightView: DiffHunkContentView?
+    private var splitSeparator: NSView?
+    private var leftWidthConstraint: NSLayoutConstraint?
+    private var splitFraction: CGFloat = 0.5
+
+    private var sideBySide = false
+    /// True when the unified-mode content is wider than the viewport (horizontal scroller shown).
+    private var hasHorizontalOverflow = false
+
+    /// Every `DiffHunkContentView` this section currently owns — used by the controller's
+    /// selection coordinator to enumerate all selectable views across the diff.
+    var contentViews: [DiffHunkContentView] {
+        if sideBySide {
+            return [leftView, rightView].compactMap { $0 }
+        }
+        return unifiedView.map { [$0] } ?? []
     }
 
-    /// Extra height to reserve for a legacy (space-consuming) horizontal scroller. Overlay
-    /// scrollers float over content and need no allowance.
     private var scrollerAllowance: CGFloat {
         guard hasHorizontalOverflow, innerScroll.scrollerStyle == .legacy else { return 0 }
         return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
@@ -653,16 +664,15 @@ private final class HunkSectionView: NSView {
     private func updateInnerHeight() {
         guard !isCollapsed, !rows.isEmpty else {
             innerHeightConstraint.constant = 0
+            documentHeightConstraint.constant = 0
             return
         }
-        // Measure the table's true rendered height rather than assuming rows × lineHeight, so any
-        // per-row rounding or top offset is captured and the last line can't be clipped.
-        innerTable.layoutSubtreeIfNeeded()
-        let contentHeight = innerTable.rect(ofRow: rows.count - 1).maxY
-        innerHeightConstraint.constant = contentHeight + scrollerAllowance
+        let h = CGFloat(rows.count) * Theme.Metric.diffLineHeight
+        documentHeightConstraint.constant = h
+        innerHeightConstraint.constant = h + scrollerAllowance
     }
 
-    init(hunkIndex: Int, dataSource: NSTableViewDataSource, delegate: NSTableViewDelegate) {
+    init(hunkIndex: Int) {
         self.hunkIndex = hunkIndex
 
         headerLabel = NSTextField(labelWithString: "")
@@ -675,45 +685,19 @@ private final class HunkSectionView: NSView {
         headerBg.wantsLayer = true
         headerBg.translatesAutoresizingMaskIntoConstraints = false
 
-        oldCol = NSTableColumn(identifier: .init("old"))
-        oldCol.width = 32; oldCol.minWidth = 32; oldCol.maxWidth = 32; oldCol.resizingMask = []
-        newCol = NSTableColumn(identifier: .init("new"))
-        newCol.width = 32; newCol.minWidth = 32; newCol.maxWidth = 32; newCol.resizingMask = []
-        innerContentCol = NSTableColumn(identifier: .init("content"))
-        innerContentCol.resizingMask = []
-
-        let tbl = NSTableView()
-        tbl.addTableColumn(oldCol)
-        tbl.addTableColumn(newCol)
-        tbl.addTableColumn(innerContentCol)
-        tbl.columnAutoresizingStyle = .noColumnAutoresizing
-        tbl.headerView = nil
-        tbl.backgroundColor = .clear
-        tbl.style = .plain
-        tbl.rowHeight = Theme.Metric.diffLineHeight
-        tbl.focusRingType = .none
-        tbl.intercellSpacing = .zero
-        tbl.gridStyleMask = []
-        tbl.selectionHighlightStyle = .none
-        tbl.dataSource = dataSource
-        tbl.delegate = delegate
-        innerTable = tbl
-
         innerScroll = HorizontalScrollView()
-        innerScroll.documentView = tbl
         innerScroll.drawsBackground = false
         innerScroll.hasHorizontalScroller = true
         innerScroll.hasVerticalScroller = false
         innerScroll.autohidesScrollers = true
         innerScroll.borderType = .noBorder
         innerScroll.horizontalScrollElasticity = .none
-        // Each hunk shows all its rows; there is no intended vertical scroll, so suppress the
-        // rubber-band that would otherwise let the table drift vertically.
         innerScroll.verticalScrollElasticity = .none
-        // In a full-size-content-view window AppKit otherwise insets nested scroll views, which
-        // shifts the table down and clips the bottom line.
         innerScroll.automaticallyAdjustsContentInsets = false
         innerScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        documentContainer.translatesAutoresizingMaskIntoConstraints = false
+        innerScroll.documentView = documentContainer
 
         super.init(frame: .zero)
 
@@ -723,6 +707,11 @@ private final class HunkSectionView: NSView {
 
         innerHeightConstraint = innerScroll.heightAnchor.constraint(equalToConstant: 0)
             .id("HunkSection.innerScroll.height")
+        documentWidthConstraint = documentContainer.widthAnchor.constraint(equalToConstant: 100)
+            .id("HunkSection.document.width")
+        documentHeightConstraint = documentContainer.heightAnchor.constraint(equalToConstant: 0)
+            .id("HunkSection.document.height")
+
         NSLayoutConstraint.activate([
             headerBg.topAnchor.constraint(equalTo: topAnchor)
                 .id("HunkSection.headerBg.top"),
@@ -749,6 +738,13 @@ private final class HunkSectionView: NSView {
             innerScroll.bottomAnchor.constraint(equalTo: bottomAnchor)
                 .id("HunkSection.innerScroll.bottom"),
             innerHeightConstraint,
+
+            documentContainer.topAnchor.constraint(equalTo: innerScroll.contentView.topAnchor)
+                .id("HunkSection.document.top"),
+            documentContainer.leadingAnchor.constraint(equalTo: innerScroll.contentView.leadingAnchor)
+                .id("HunkSection.document.leading"),
+            documentWidthConstraint,
+            documentHeightConstraint,
         ])
 
         let click = NSClickGestureRecognizer(target: self, action: #selector(headerTapped))
@@ -763,195 +759,198 @@ private final class HunkSectionView: NSView {
 
     @objc private func headerTapped() { onToggle?() }
 
-    func reloadTable() {
-        innerTable.rowHeight = Theme.Metric.diffLineHeight
-        innerTable.reloadData()
+    // MARK: - Mode
+
+    func configureSideBySide(_ sideBySide: Bool) {
+        guard self.sideBySide != sideBySide || (sideBySide ? leftView == nil : unifiedView == nil) else {
+            return
+        }
+        self.sideBySide = sideBySide
+        // Tear down whatever is there.
+        unifiedView?.removeFromSuperview(); unifiedView = nil
+        leftView?.removeFromSuperview(); leftView = nil
+        rightView?.removeFromSuperview(); rightView = nil
+        splitSeparator?.removeFromSuperview(); splitSeparator = nil
+        leftWidthConstraint = nil
+
+        if sideBySide {
+            installSideBySideViews()
+        } else {
+            installUnifiedView()
+        }
+    }
+
+    private func installUnifiedView() {
+        let v = DiffHunkContentView(layout: .unified(gutterWidth: gutterWidth))
+        v.hunkIndex = hunkIndex
+        v.translatesAutoresizingMaskIntoConstraints = false
+        documentContainer.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.leadingAnchor.constraint(equalTo: documentContainer.leadingAnchor)
+                .id("HunkSection.unifiedView.leading"),
+            v.trailingAnchor.constraint(equalTo: documentContainer.trailingAnchor)
+                .id("HunkSection.unifiedView.trailing"),
+            v.topAnchor.constraint(equalTo: documentContainer.topAnchor)
+                .id("HunkSection.unifiedView.top"),
+            v.bottomAnchor.constraint(equalTo: documentContainer.bottomAnchor)
+                .id("HunkSection.unifiedView.bottom"),
+        ])
+        unifiedView = v
+        applyRowsToContent()
+    }
+
+    private func installSideBySideViews() {
+        let left = DiffHunkContentView(layout: .sideBySide(side: .left, gutterWidth: gutterWidth))
+        let right = DiffHunkContentView(layout: .sideBySide(side: .right, gutterWidth: gutterWidth))
+        let sep = NSView()
+        sep.wantsLayer = true
+        sep.translatesAutoresizingMaskIntoConstraints = false
+        for v: NSView in [left, right] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            documentContainer.addSubview(v)
+            // Side-by-side clips long lines rather than scrolling horizontally.
+            v.wantsLayer = true; v.layer?.masksToBounds = true
+        }
+        documentContainer.addSubview(sep)
+
+        left.hunkIndex = hunkIndex
+        right.hunkIndex = hunkIndex
+        leftView = left
+        rightView = right
+        splitSeparator = sep
+
+        let leftW = left.widthAnchor.constraint(equalTo: documentContainer.widthAnchor,
+                                                multiplier: splitFraction)
+            .id("HunkSection.left.width")
+        leftWidthConstraint = leftW
+
+        NSLayoutConstraint.activate([
+            left.leadingAnchor.constraint(equalTo: documentContainer.leadingAnchor)
+                .id("HunkSection.left.leading"),
+            left.topAnchor.constraint(equalTo: documentContainer.topAnchor)
+                .id("HunkSection.left.top"),
+            left.bottomAnchor.constraint(equalTo: documentContainer.bottomAnchor)
+                .id("HunkSection.left.bottom"),
+            leftW,
+
+            sep.leadingAnchor.constraint(equalTo: left.trailingAnchor)
+                .id("HunkSection.sep.leading"),
+            sep.topAnchor.constraint(equalTo: documentContainer.topAnchor)
+                .id("HunkSection.sep.top"),
+            sep.bottomAnchor.constraint(equalTo: documentContainer.bottomAnchor)
+                .id("HunkSection.sep.bottom"),
+            sep.widthAnchor.constraint(equalToConstant: 1)
+                .id("HunkSection.sep.width"),
+
+            right.leadingAnchor.constraint(equalTo: sep.trailingAnchor)
+                .id("HunkSection.right.leading"),
+            right.trailingAnchor.constraint(equalTo: documentContainer.trailingAnchor)
+                .id("HunkSection.right.trailing"),
+            right.topAnchor.constraint(equalTo: documentContainer.topAnchor)
+                .id("HunkSection.right.top"),
+            right.bottomAnchor.constraint(equalTo: documentContainer.bottomAnchor)
+                .id("HunkSection.right.bottom"),
+        ])
+
+        sep.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        applyRowsToContent()
+    }
+
+    private func applyColumnLayouts() {
+        unifiedView?.columnLayout = .unified(gutterWidth: gutterWidth)
+        leftView?.columnLayout = .sideBySide(side: .left, gutterWidth: gutterWidth)
+        rightView?.columnLayout = .sideBySide(side: .right, gutterWidth: gutterWidth)
+    }
+
+    // MARK: - Rows
+
+    private func applyRowsToContent() {
+        if let v = unifiedView {
+            v.rows = rows.map { row -> DiffContentRow in
+                switch row {
+                case .line(let l):
+                    return DiffContentRow(line: l, oldNumber: l.oldLineNumber, newNumber: l.newLineNumber)
+                case .pair:
+                    // Defensive: a pair row in unified mode shouldn't happen, but treat as blank.
+                    return .blank
+                }
+            }
+        }
+        if let lv = leftView, let rv = rightView {
+            lv.rows = rows.map { row in
+                switch row {
+                case .pair(let left, _):
+                    return DiffContentRow(line: left, oldNumber: left?.oldLineNumber, newNumber: nil)
+                case .line(let l):
+                    return DiffContentRow(line: l, oldNumber: l.oldLineNumber, newNumber: nil)
+                }
+            }
+            rv.rows = rows.map { row in
+                switch row {
+                case .pair(_, let right):
+                    return DiffContentRow(line: right, oldNumber: nil, newNumber: right?.newLineNumber)
+                case .line(let l):
+                    return DiffContentRow(line: l, oldNumber: nil, newNumber: l.newLineNumber)
+                }
+            }
+        }
         updateInnerHeight()
     }
 
+    // MARK: - Width
+
     func updateContentColumnWidth(available: CGFloat) {
-        // Gutter columns are hidden in side-by-side mode; subtract only the visible ones.
-        let gutterCols = innerTable.tableColumns.filter { $0.identifier.rawValue != "content" }
-        let visibleGutter = gutterCols.reduce(0) { $0 + ($1.isHidden ? 0 : $1.width) }
-        let viewportContent = available - visibleGutter
-        // Side-by-side fits the viewport (the draggable divider rebalances the two halves and long
-        // lines clip rather than scroll); unified keeps the content's natural width so long lines
-        // scroll horizontally.
-        let target = sideBySide ? max(viewportContent, 100)
-                                : max(viewportContent, contentMinWidth, 100)
-
-        // A horizontal scroller appears whenever the content column is wider than the viewport;
-        // changing that state changes the height we need to reserve for the scroller.
-        let overflow = target > viewportContent + 0.5
-        if overflow != hasHorizontalOverflow {
-            hasHorizontalOverflow = overflow
-            updateInnerHeight()
-        }
-
-        guard abs(innerContentCol.width - target) > 0.5 else { return }
-        innerContentCol.width = target
-    }
-
-    func configureSideBySide(_ sideBySide: Bool) {
-        self.sideBySide = sideBySide
-        for col in innerTable.tableColumns where col.identifier.rawValue != "content" {
-            col.isHidden = sideBySide
+        // Unified: documentContainer = max(natural intrinsic width, viewport).
+        // Side-by-side: documentContainer = viewport exactly; left/right share it via split fraction.
+        if sideBySide {
+            documentWidthConstraint.constant = max(available, 100)
+            if hasHorizontalOverflow { hasHorizontalOverflow = false; updateInnerHeight() }
+        } else {
+            let intrinsic = unifiedView?.intrinsicContentSize.width ?? 0
+            let naturalWidth = max(intrinsic, contentMinWidth)
+            let target = max(naturalWidth, available, 100)
+            documentWidthConstraint.constant = target
+            let overflow = target > available + 0.5
+            if overflow != hasHorizontalOverflow {
+                hasHorizontalOverflow = overflow
+                updateInnerHeight()
+            }
         }
     }
 
-    /// Push a new split fraction to the visible side-by-side cells (rows offscreen pick it up when
-    /// they're next configured).
+    /// Re-balance the side-by-side halves when the user drags the centre divider.
+    /// The multiplier of an NSLayoutConstraint is immutable, so we recreate it.
     func applySplitFraction(_ fraction: CGFloat) {
-        guard sideBySide,
-              let contentCol = innerTable.tableColumns.firstIndex(where: {
-                  $0.identifier.rawValue == "content" }) else { return }
-        let rows = innerTable.rows(in: innerTable.visibleRect)
-        guard rows.length > 0, let range = Range(rows) else { return }
-        for r in range {
-            if let cell = innerTable.view(atColumn: contentCol, row: r,
-                                          makeIfNecessary: false) as? SplitCellView {
-                cell.setSplitFraction(fraction)
-            }
-        }
+        splitFraction = fraction
+        guard let left = leftView, let oldConstraint = leftWidthConstraint else { return }
+        oldConstraint.isActive = false
+        let new = left.widthAnchor.constraint(equalTo: documentContainer.widthAnchor,
+                                              multiplier: fraction)
+            .id("HunkSection.left.width")
+        new.isActive = true
+        leftWidthConstraint = new
     }
 }
 
 
-// MARK: - Table data source / delegate
-
-extension DiffViewController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        tableToSection[tableView]?.rows.count ?? 0
-    }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        Theme.Metric.diffLineHeight
-    }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        guard let section = tableToSection[tableView],
-              row >= 0, row < section.rows.count else { return DiffRowView() }
-        let rv = DiffRowView()
-        switch section.rows[row] {
-        case .line(let l):
-            if l.change != .substantive { rv.fill = .clear }
-            else {
-                switch l.kind {
-                case .added:   rv.fill = Theme.Color.addedBackground
-                case .removed: rv.fill = Theme.Color.removedBackground
-                case .context: rv.fill = .clear
-                }
-            }
-        case .pair:
-            rv.fill = .clear
-        }
-        return rv
-    }
-
-    func tableView(_ tableView: NSTableView,
-                   viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let section = tableToSection[tableView],
-              row >= 0, row < section.rows.count else { return nil }
-        let colID = tableColumn?.identifier.rawValue ?? ""
-        switch section.rows[row] {
-        case .line(let line):
-            switch colID {
-            case "old": return gutterCell(in: tableView, text: line.oldLineNumber.map(String.init) ?? "")
-            case "new": return gutterCell(in: tableView, text: line.newLineNumber.map(String.init) ?? "")
-            default:    return contentCell(in: tableView, line: line)
-            }
-        case .pair(let left, let right):
-            guard colID == "content" else { return gutterCell(in: tableView, text: "") }
-            return splitCell(in: tableView, left: left, right: right)
-        }
-    }
-}
-
-// MARK: - Cell builders
+// MARK: - Responder-chain copy (multi-hunk selections)
 
 extension DiffViewController {
-    private func contentCell(in table: NSTableView, line: DiffLine) -> NSView {
-        let id = NSUserInterfaceItemIdentifier("content")
-        let cell = dequeue(id, in: table) {
-            let tf = NSTextField(labelWithString: "")
-            tf.lineBreakMode = .byClipping
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            $0.addSubview(tf); $0.textField = tf
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: $0.leadingAnchor, constant: 8)
-                    .id("DiffContentCell.text.leading"),
-                tf.trailingAnchor.constraint(equalTo: $0.trailingAnchor)
-                    .id("DiffContentCell.text.trailing"),
-                tf.centerYAnchor.constraint(equalTo: $0.centerYAnchor)
-                    .id("DiffContentCell.text.centerY"),
-            ])
-        }
-        cell.textField?.font = Theme.Font.code()
-        let marker: String
-        switch line.kind {
-        case .added:   marker = "+"; cell.textField?.textColor = Theme.Color.addedText
-        case .removed: marker = "−"; cell.textField?.textColor = Theme.Color.removedText
-        case .context: marker = " "; cell.textField?.textColor = .labelColor
-        }
-        switch line.change {
-        case .substantive: cell.toolTip = nil
-        case .whitespace:
-            cell.textField?.textColor = .tertiaryLabelColor
-            cell.toolTip = "Whitespace-only change"
-        case .moved:
-            cell.textField?.textColor = .tertiaryLabelColor
-            cell.toolTip = "Moved code — appears elsewhere in this diff"
-        }
-        cell.textField?.stringValue = marker + " " + line.text
-        return cell
+    /// First-responder `copy:` fallback when the focused content view's own copy is bypassed
+    /// (e.g. the menu item is invoked while focus is on the controller's view). Coordinator
+    /// concatenates whatever the selected hunks contribute.
+    @objc func copy(_ sender: Any?) {
+        guard let text = selectionCoordinator.combinedSelectedText(), !text.isEmpty else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
-
-    private func gutterCell(in table: NSTableView, text: String) -> NSView {
-        let id = NSUserInterfaceItemIdentifier("gutter")
-        let cell = dequeue(id, in: table) {
-            let tf = NSTextField(labelWithString: "")
-            tf.alignment = .right
-            tf.textColor = .tertiaryLabelColor
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            $0.addSubview(tf); $0.textField = tf
-            NSLayoutConstraint.activate([
-                tf.leadingAnchor.constraint(equalTo: $0.leadingAnchor)
-                    .id("DiffGutterCell.text.leading"),
-                tf.trailingAnchor.constraint(equalTo: $0.trailingAnchor, constant: -6)
-                    .id("DiffGutterCell.text.trailing"),
-                tf.centerYAnchor.constraint(equalTo: $0.centerYAnchor)
-                    .id("DiffGutterCell.text.centerY"),
-            ])
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) {
+            return selectionCoordinator.combinedSelectedText()?.isEmpty == false
         }
-        cell.textField?.font = Theme.Font.codeGutter
-        cell.textField?.stringValue = text
-        return cell
+        return true
     }
-
-    private func splitCell(in table: NSTableView, left: DiffLine?, right: DiffLine?) -> NSView {
-        let id = NSUserInterfaceItemIdentifier("split")
-        let cell = (table.makeView(withIdentifier: id, owner: self) as? SplitCellView)
-            ?? SplitCellView(identifier: id)
-        cell.configure(left: left, right: right)
-        cell.setSplitFraction(sideSplitFraction)
-        return cell
-    }
-
-    private func dequeue(_ id: NSUserInterfaceItemIdentifier, in table: NSTableView,
-                         make: (NSTableCellView) -> Void) -> NSTableCellView {
-        if let reused = table.makeView(withIdentifier: id, owner: self) as? NSTableCellView {
-            return reused
-        }
-        let cell = NSTableCellView(); cell.identifier = id; make(cell); return cell
-    }
-}
-
-// MARK: - Side-by-side toggle (updates all hunk tables)
-
-extension DiffViewController {
-    // Called from reload() when sideBySide changes — rebuildHunks handles everything.
 }
 
 // MARK: - Flipped document view
@@ -1098,148 +1097,6 @@ private final class SideBySideDividerView: NSView {
     }
     // Swallow mouseDown so the drag begins cleanly.
     override func mouseDown(with event: NSEvent) {}
-}
-
-// MARK: - Row background
-
-@objc(DiffRowView)
-private final class DiffRowView: NSTableRowView {
-    var fill: NSColor = .clear
-    override func drawBackground(in dirtyRect: NSRect) { fill.setFill(); dirtyRect.fill() }
-}
-
-// MARK: - Side-by-side line cell
-
-@objc(DiffSplitCellView)
-private final class SplitCellView: NSTableCellView {
-    private let leftBG = NSView()
-    private let rightBG = NSView()
-    private let leftGutter = NSTextField(labelWithString: "")
-    private let rightGutter = NSTextField(labelWithString: "")
-    private let leftText = NSTextField(labelWithString: "")
-    private let rightText = NSTextField(labelWithString: "")
-
-    /// The split point as a fraction of the cell width. Driven by the draggable divider so both
-    /// sides can be rebalanced (e.g. to read a long line on one side). Recreated, not mutated,
-    /// because a constraint's multiplier is immutable.
-    private var splitConstraint: NSLayoutConstraint!
-    private(set) var splitFraction: CGFloat = 0.5
-
-    init(identifier: NSUserInterfaceItemIdentifier) {
-        super.init(frame: .zero)
-        self.identifier = identifier
-
-        for bg in [leftBG, rightBG] {
-            bg.wantsLayer = true; bg.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(bg)
-        }
-        for g in [leftGutter, rightGutter] {
-            g.alignment = .right; g.textColor = .tertiaryLabelColor
-            g.translatesAutoresizingMaskIntoConstraints = false
-        }
-        for t in [leftText, rightText] {
-            t.lineBreakMode = .byClipping; t.translatesAutoresizingMaskIntoConstraints = false
-        }
-        [leftGutter, leftText, rightGutter, rightText].forEach(addSubview)
-
-        // The split is defined by the left column's width (fraction of the cell); leftBG.trailing
-        // is the divide that every other anchor hangs off.
-        splitConstraint = leftBG.widthAnchor.constraint(equalTo: widthAnchor, multiplier: splitFraction)
-            .id("SplitCell.split")
-
-        let g = DiffViewController.sideGutter
-        NSLayoutConstraint.activate([
-            leftBG.leadingAnchor.constraint(equalTo: leadingAnchor)
-                .id("SplitCell.leftBG.leading"),
-            leftBG.topAnchor.constraint(equalTo: topAnchor)
-                .id("SplitCell.leftBG.top"),
-            leftBG.bottomAnchor.constraint(equalTo: bottomAnchor)
-                .id("SplitCell.leftBG.bottom"),
-            splitConstraint,
-            rightBG.leadingAnchor.constraint(equalTo: leftBG.trailingAnchor)
-                .id("SplitCell.rightBG.leading"),
-            rightBG.topAnchor.constraint(equalTo: topAnchor)
-                .id("SplitCell.rightBG.top"),
-            rightBG.bottomAnchor.constraint(equalTo: bottomAnchor)
-                .id("SplitCell.rightBG.bottom"),
-            rightBG.trailingAnchor.constraint(equalTo: trailingAnchor)
-                .id("SplitCell.rightBG.trailing"),
-
-            leftGutter.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
-                .id("SplitCell.leftGutter.leading"),
-            leftGutter.widthAnchor.constraint(equalToConstant: g - 6)
-                .id("SplitCell.leftGutter.width"),
-            leftGutter.centerYAnchor.constraint(equalTo: centerYAnchor)
-                .id("SplitCell.leftGutter.centerY"),
-            leftText.leadingAnchor.constraint(equalTo: leftGutter.trailingAnchor, constant: 4)
-                .id("SplitCell.leftText.leading"),
-            leftText.trailingAnchor.constraint(lessThanOrEqualTo: leftBG.trailingAnchor, constant: -4)
-                .id("SplitCell.leftText.trailing"),
-            leftText.centerYAnchor.constraint(equalTo: centerYAnchor)
-                .id("SplitCell.leftText.centerY"),
-
-            rightGutter.leadingAnchor.constraint(equalTo: leftBG.trailingAnchor, constant: 6)
-                .id("SplitCell.rightGutter.leading"),
-            rightGutter.widthAnchor.constraint(equalToConstant: g - 6)
-                .id("SplitCell.rightGutter.width"),
-            rightGutter.centerYAnchor.constraint(equalTo: centerYAnchor)
-                .id("SplitCell.rightGutter.centerY"),
-            rightText.leadingAnchor.constraint(equalTo: rightGutter.trailingAnchor, constant: 4)
-                .id("SplitCell.rightText.leading"),
-            rightText.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4)
-                .id("SplitCell.rightText.trailing"),
-            rightText.centerYAnchor.constraint(equalTo: centerYAnchor)
-                .id("SplitCell.rightText.centerY"),
-        ])
-    }
-    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
-
-    func setSplitFraction(_ fraction: CGFloat) {
-        guard abs(fraction - splitFraction) > 0.001 else { return }
-        splitFraction = fraction
-        splitConstraint.isActive = false
-        splitConstraint = leftBG.widthAnchor.constraint(equalTo: widthAnchor, multiplier: fraction)
-            .id("SplitCell.split")
-        splitConstraint.isActive = true
-    }
-
-    func configure(left: DiffLine?, right: DiffLine?) {
-        let gutterFont = Theme.Font.codeGutter
-        let codeFont = Theme.Font.code()
-        for g in [leftGutter, rightGutter] { g.font = gutterFont }
-        for t in [leftText, rightText] { t.font = codeFont }
-        configureSide(gutter: leftGutter, text: leftText, line: left, isOld: true)
-        configureSide(gutter: rightGutter, text: rightText, line: right, isOld: false)
-        leftBG.layer?.backgroundColor = Self.background(for: left).cgColor
-        rightBG.layer?.backgroundColor = Self.background(for: right).cgColor
-    }
-
-    private func configureSide(gutter: NSTextField, text: NSTextField,
-                                line: DiffLine?, isOld: Bool) {
-        guard let line else { gutter.stringValue = ""; text.stringValue = ""; return }
-        gutter.stringValue = (isOld ? line.oldLineNumber : line.newLineNumber).map(String.init) ?? ""
-        let marker: String
-        switch line.kind {
-        case .added:   marker = "+"; text.textColor = Theme.Color.addedText
-        case .removed: marker = "−"; text.textColor = Theme.Color.removedText
-        case .context: marker = " "; text.textColor = .labelColor
-        }
-        if line.change != .substantive {
-            text.textColor = .tertiaryLabelColor
-            text.toolTip = line.change == .whitespace ? "Whitespace-only change"
-                                                      : "Moved code — appears elsewhere in this diff"
-        } else { text.toolTip = nil }
-        text.stringValue = marker + " " + line.text
-    }
-
-    private static func background(for line: DiffLine?) -> NSColor {
-        guard let line, line.change == .substantive else { return .clear }
-        switch line.kind {
-        case .added:   return Theme.Color.addedBackground
-        case .removed: return Theme.Color.removedBackground
-        case .context: return .clear
-        }
-    }
 }
 
 // MARK: - File header
