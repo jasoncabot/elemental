@@ -7,12 +7,22 @@ import GitData
 public final class CommitDetailPresenter: Presenter {
     public enum Mode: Sendable { case unified, sideBySide }
 
-    /// Loading state of a commit's git note. Distinguishes "still fetching" from "no note exists"
-    /// — a plain `String?` collapses those into the same `nil`.
-    public enum NoteState: Sendable, Equatable {
-        case loading           // fetch in flight; result not yet known
-        case loaded(String)    // the commit has a note
-        case unavailable       // fetch finished: the commit has no note (or it couldn't be read)
+    /// A note from a specific git note ref (e.g. `refs/notes/commits`, `refs/notes/review`).
+    public struct NoteEntry: Sendable, Equatable {
+        /// Full ref name, e.g. `refs/notes/commits`.
+        public var ref: String
+        /// Human-readable short name (everything after `refs/notes/`).
+        public var name: String
+        /// Content of the note — always `.loaded` for entries the presenter exposes
+        /// (entries with no note are simply omitted from the array).
+        public var text: String
+        public init(ref: String, text: String) {
+            self.ref = ref
+            self.name = ref.hasPrefix("refs/notes/")
+                ? String(ref.dropFirst("refs/notes/".count))
+                : ref
+            self.text = text
+        }
     }
 
     private let backend: GitBackend
@@ -21,8 +31,13 @@ public final class CommitDetailPresenter: Presenter {
     public private(set) var sha: String?
     /// The commit being reviewed — its message is the "why" behind the diff.
     public private(set) var commit: Commit?
-    /// The commit's git note (refs/notes/commits), fetched on demand.
-    public private(set) var commitNote: NoteState = .unavailable
+    /// Notes attached to this commit across all available note refs, ordered by ref name.
+    /// Only entries with an actual note text are included (no empty placeholders).
+    public private(set) var commitNotes: [NoteEntry] = []
+    /// Line-level AI/human authorship for the selected commit, or nil when unavailable.
+    public private(set) var aiAuthorship: AIAuthorshipRecord?
+    /// Cached list of `refs/notes/*` refs in the repo, loaded once per presenter lifetime.
+    private var noteRefsCache: [String]?
     /// Load state of the commit's diff — the single source of truth for files/loading/error.
     public private(set) var filesState: Loadable<[DiffFile]> = .idle
     public private(set) var selectedFile: DiffFile.ID?
@@ -49,11 +64,14 @@ public final class CommitDetailPresenter: Presenter {
         self.sha = sha
         self.commit = commit
         guard let commit else {
-            commitNote = .unavailable
+            commitNotes = []
+            aiAuthorship = nil
             filesState = .idle; selectedFile = nil; notify(); return
         }
-        commitNote = .loading
-        fetchNote(for: commit.sha)
+        commitNotes = []
+        aiAuthorship = nil
+        fetchNotes(for: commit.sha)
+        fetchAIAuthorship(for: commit.sha)
         if let cached = cache[cacheKey(commit.sha)] {
             filesState = .loaded(cached)
             selectedFile = cached.first?.id
@@ -63,12 +81,45 @@ public final class CommitDetailPresenter: Presenter {
         load(commit)
     }
 
-    /// Loads the commit's git note in the background; the message panel updates if/when it arrives.
-    private func fetchNote(for sha: String) {
+    /// Discovers available note refs (once, cached) then fetches the note for this SHA from each.
+    private func fetchNotes(for sha: String) {
         Task { [weak self, backend, repo, sha] in
-            let note = (try? await backend.note(for: sha, in: repo)) ?? nil
+            // Load the list of note refs lazily — one subprocess, cached for the presenter's life.
+            let refs: [String]
+            if let cached = self?.noteRefsCache {
+                refs = cached
+            } else {
+                let loaded = (try? await backend.noteRefs(for: repo)) ?? []
+                self?.noteRefsCache = loaded
+                refs = loaded
+            }
+
+            guard !refs.isEmpty else {
+                guard let self, self.sha == sha else { return }
+                self.commitNotes = []
+                self.notify()
+                return
+            }
+
+            // Fetch each note sequentially — rare to have more than 2-3 refs.
+            var entries: [NoteEntry] = []
+            for ref in refs {
+                if let text = try? await backend.note(for: sha, ref: ref, in: repo),
+                   !text.isEmpty {
+                    entries.append(NoteEntry(ref: ref, text: text))
+                }
+            }
             guard let self, self.sha == sha else { return }
-            self.commitNote = note.map(NoteState.loaded) ?? .unavailable
+            self.commitNotes = entries
+            self.notify()
+        }
+    }
+
+    private func fetchAIAuthorship(for sha: String) {
+        Task { [weak self, backend, repo, sha] in
+            let record = try? await backend.aiAuthorship(for: sha, in: repo)
+            guard let self, self.sha == sha else { return }
+            self.aiAuthorship = record
             self.notify()
         }
     }

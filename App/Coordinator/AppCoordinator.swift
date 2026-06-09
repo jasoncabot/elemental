@@ -164,9 +164,9 @@ final class AppCoordinator {
     // MARK: - Repo list / selection
 
     private func refreshRepoList() {
-        let choices = bookmarkStore.repositories.map {
-            RepoChoice(id: $0.rootURL, title: $0.rootURL.lastPathComponent)
-        }
+        let choices = bookmarkStore.repositories
+            .map { RepoChoice(id: $0.rootURL, title: $0.rootURL.lastPathComponent) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         toolbarController.setRepos(choices, selected: activeRepoURL)
     }
 

@@ -86,14 +86,14 @@ struct DetailSection {
 /// The model for the files-pane summary header.
 enum DetailHeader {
     case none
-    case commit(Commit?, note: CommitDetailPresenter.NoteState)
+    case commit(Commit?, notes: [CommitDetailPresenter.NoteEntry], aiAuthorship: AIAuthorshipRecord?)
     case workingCopy(branch: String?, staged: Int, unstaged: Int, untracked: Int, prepared: String?)
 }
 
 // MARK: - Commit detail conformance
 
 extension CommitDetailPresenter: DetailSource {
-    var header: DetailHeader { .commit(commit, note: commitNote) }
+    var header: DetailHeader { .commit(commit, notes: commitNotes, aiAuthorship: aiAuthorship) }
 
     func sections(reviewMode: ReviewMode) -> [DetailSection] {
         FileOrganizer.organize(files, mode: reviewMode).map {

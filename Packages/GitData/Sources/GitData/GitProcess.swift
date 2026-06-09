@@ -98,6 +98,53 @@ struct GitRunner: Sendable {
         }
     }
 
+    /// Run with `input` written to stdin; closes stdin before reading stdout.
+    /// Used for batch plumbing commands (`cat-file --batch`) that read all object names up front.
+    func runWithInput(_ arguments: [String], input: Data, in directory: URL?,
+                      optionalLocks: Bool = false) async throws -> Data {
+        let process = Process()
+        process.executableURL = gitURL
+        process.arguments = GitRunner.globalConfigArgs + arguments
+        if let directory { process.currentDirectoryURL = directory }
+        process.environment = GitRunner.hardenedEnvironment(optionalLocks: optionalLocks)
+
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardInput = inPipe
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        return try await withTaskCancellationHandler {
+            try process.run()
+            // Write then close stdin so git sees EOF and starts processing.
+            inPipe.fileHandleForWriting.write(input)
+            inPipe.fileHandleForWriting.closeFile()
+            outPipe.fileHandleForWriting.closeFile()
+            errPipe.fileHandleForWriting.closeFile()
+
+            async let exitCode: Int32 = withCheckedContinuation { cont in
+                process.terminationHandler = { cont.resume(returning: $0.terminationStatus) }
+            }
+            async let outData: Data = withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .utility).async {
+                    cont.resume(returning: outPipe.fileHandleForReading.readDataToEndOfFile())
+                }
+            }
+            let data = await outData
+            let code = await exitCode
+            guard code == 0 else {
+                let errText = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                throw GitError.commandFailed(
+                    command: "git " + arguments.joined(separator: " "),
+                    exitCode: code, stderr: errText)
+            }
+            return data
+        } onCancel: {
+            if process.isRunning { process.terminate() }
+        }
+    }
+
     /// Run and throw on non-zero exit; returns stdout.
     func runChecked(_ arguments: [String], in directory: URL?, optionalLocks: Bool = false) async throws -> Data {
         let result = try await run(arguments, in: directory, optionalLocks: optionalLocks)

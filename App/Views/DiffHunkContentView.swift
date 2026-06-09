@@ -260,6 +260,7 @@ final class DiffHunkContentView: NSView {
     }
 
     private func rebuildLines() {
+        selection = .none
         contentLines = rows.map { row -> CTLine? in
             guard let line = row.line else { return nil }
             // Replace tabs with spaces visually (4 spaces). Keeps width predictable for

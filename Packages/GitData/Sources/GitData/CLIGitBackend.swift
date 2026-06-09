@@ -322,4 +322,30 @@ public actor CLIGitBackend: GitBackend {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
     }
+
+    public func loadIssues(in repo: Repository) async throws -> [GitIssue] {
+        try await GitBugReader.load(runner: runner, repo: repo)
+    }
+
+    public func aiAuthorship(for sha: String, in repo: Repository) async throws -> AIAuthorshipRecord? {
+        try await GitAIAuthorshipReader.load(sha: sha, runner: runner, root: repo.rootURL)
+    }
+
+    public func noteRefs(for repo: Repository) async throws -> [String] {
+        // `for-each-ref refs/notes/` lists all existing note refs without creating any.
+        let result = try await runner.run(
+            ["for-each-ref", "--format=%(refname)", "refs/notes/"], in: repo.rootURL)
+        guard result.exitCode == 0 else { return [] }
+        return String(decoding: result.stdout, as: UTF8.self)
+            .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
+    public func note(for sha: String, ref: String, in repo: Repository) async throws -> String? {
+        let result = try await runner.run(
+            ["notes", "--ref=\(ref)", "show", sha], in: repo.rootURL)
+        guard result.exitCode == 0 else { return nil }
+        let text = String(decoding: result.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
 }

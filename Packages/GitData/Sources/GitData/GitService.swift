@@ -131,6 +131,26 @@ public actor GitService: GitBackend {
         try await backend.note(for: sha, in: repo)
     }
 
+    public func noteRefs(for repo: Repository) async throws -> [String] {
+        try await backend.noteRefs(for: repo)
+    }
+
+    public func note(for sha: String, ref: String, in repo: Repository) async throws -> String? {
+        try await backend.note(for: sha, ref: ref, in: repo)
+    }
+
+    public func loadIssues(in repo: Repository) async throws -> [GitIssue] {
+        try await backend.loadIssues(in: repo)
+    }
+
+    public func preparedCommitMessage(for repo: Repository) async throws -> String? {
+        try await backend.preparedCommitMessage(for: repo)
+    }
+
+    public func aiAuthorship(for sha: String, in repo: Repository) async throws -> AIAuthorshipRecord? {
+        try await backend.aiAuthorship(for: sha, in: repo)
+    }
+
     // MARK: - Coalescing helper
 
     /// Runs `work` once; if another call with the same `key` is already in flight, both callers

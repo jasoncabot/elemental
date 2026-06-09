@@ -216,6 +216,166 @@ public struct DiffFile: Hashable, Sendable, Identifiable {
     }
 }
 
+/// A git-native issue stored in `refs/bugs/*` (git-bug format).
+public struct GitIssue: Hashable, Sendable, Identifiable {
+    public enum Status: Hashable, Sendable { case open, closed }
+
+    public var id: String          // short 7-char prefix of the bug SHA
+    public var bugID: String       // full 64-char bug SHA (the ref suffix)
+    public var title: String
+    public var body: String        // from the CreateOp message
+    public var status: Status
+    public var createdAt: Date
+    public var updatedAt: Date     // timestamp of the last operation in the chain
+    public var labels: [String]
+    public var commentCount: Int
+
+    public var isOpen: Bool { status == .open }
+
+    public init(id: String, bugID: String, title: String, body: String, status: Status,
+                createdAt: Date, updatedAt: Date, labels: [String], commentCount: Int) {
+        self.id = id
+        self.bugID = bugID
+        self.title = title
+        self.body = body
+        self.status = status
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.labels = labels
+        self.commentCount = commentCount
+    }
+}
+
+/// A typed item in the review timeline. Commits are the primary kind; issues from git-bug
+/// (`refs/bugs/*`) appear interleaved. The enum is the stable contract between
+/// `TimelinePresenter` and the view — adding a new case is all that's needed for a new kind.
+public enum TimelineItem: Identifiable, Sendable {
+    case commit(Commit)
+    case issue(GitIssue)
+
+    public var id: String {
+        switch self {
+        case .commit(let c): return "commit:\(c.sha)"
+        case .issue(let i): return "issue:\(i.bugID)"
+        }
+    }
+
+    /// The SHA if this item is a commit, else nil.
+    public var sha: String? {
+        if case .commit(let c) = self { return c.sha } else { return nil }
+    }
+
+    /// The canonical timestamp for ordering items in the stream.
+    public var timestamp: Date {
+        switch self {
+        case .commit(let c): return c.commitDate
+        case .issue(let i): return i.updatedAt
+        }
+    }
+
+    /// Convenience: the commit, or nil for other item kinds.
+    public var commit: Commit? {
+        if case .commit(let c) = self { return c } else { return nil }
+    }
+
+    /// Convenience: the issue, or nil for other item kinds.
+    public var issue: GitIssue? {
+        if case .issue(let i) = self { return i } else { return nil }
+    }
+}
+
+/// A git trailer — a `Key: Value` line at the end of a commit body (RFC 5322 style).
+/// Common examples: `Co-authored-by`, `Reviewed-by`, `Fixes`, `Closes`, `Signed-off-by`.
+public struct CommitTrailer: Hashable, Sendable {
+    public var key: String
+    public var value: String
+    public init(key: String, value: String) {
+        self.key = key
+        self.value = value
+    }
+}
+
+/// A parsed Conventional Commits header (`feat(auth)!: add login`).
+/// See <https://www.conventionalcommits.org/>.
+public struct ConventionalCommit: Hashable, Sendable {
+    public var type: String        // "feat", "fix", "chore", …
+    public var scope: String?      // "auth", "api", … or nil
+    public var isBreaking: Bool    // `!` before the colon, or `BREAKING CHANGE` trailer
+    public var description: String // everything after `: `
+    public init(type: String, scope: String?, isBreaking: Bool, description: String) {
+        self.type = type
+        self.scope = scope
+        self.isBreaking = isBreaking
+        self.description = description
+    }
+}
+
+/// A detected reference to an external issue or ticket in commit text.
+public struct IssueRef: Hashable, Sendable {
+    public enum Style: Hashable, Sendable {
+        case numeric(Int)     // #123 — GitHub/GitLab style
+        case prefixed(String) // JIRA-456, GH-789, LINEAR-123
+    }
+    public var raw: String   // the matched string as it appears in the text
+    public var style: Style
+    public init(raw: String, style: Style) {
+        self.raw = raw
+        self.style = style
+    }
+}
+
+public extension Commit {
+    /// Trailers parsed from the commit body (e.g. `Co-authored-by`, `Fixes`, `Reviewed-by`).
+    var trailers: [CommitTrailer] { TrailerParser.parse(body) }
+    /// Conventional Commits header parsed from the subject, or nil if the subject doesn't match.
+    var conventional: ConventionalCommit? { ConventionalCommitParser.parse(subject) }
+    /// Issue references detected in subject, body, and trailer values.
+    var issueRefs: [IssueRef] { IssueRefParser.parse(subject: subject, body: body) }
+    /// The commit body with the trailing trailer block stripped — the prose the author wrote.
+    var bodyWithoutTrailers: String { TrailerParser.bodyWithoutTrailers(body) }
+}
+
+/// Line-level authorship record for a commit, read from `refs/ai/authorship/<sha>` (git-ai format).
+/// Records which authors (human or AI agent) wrote which lines in each changed file.
+public struct AIAuthorshipRecord: Hashable, Sendable {
+    public struct FileRecord: Hashable, Sendable {
+        public struct Author: Hashable, Sendable {
+            public var name: String
+            public var lineCount: Int
+            public init(name: String, lineCount: Int) {
+                self.name = name
+                self.lineCount = lineCount
+            }
+        }
+        public var path: String
+        public var authors: [Author]
+        public var totalLines: Int { authors.reduce(0) { $0 + $1.lineCount } }
+        public init(path: String, authors: [Author]) {
+            self.path = path
+            self.authors = authors
+        }
+    }
+
+    public var files: [FileRecord]
+    public var schemaVersion: String
+
+    /// Total lines per author name across all files.
+    public var authorTotals: [String: Int] {
+        var totals: [String: Int] = [:]
+        for file in files {
+            for author in file.authors {
+                totals[author.name, default: 0] += author.lineCount
+            }
+        }
+        return totals
+    }
+
+    public init(files: [FileRecord], schemaVersion: String = "") {
+        self.files = files
+        self.schemaVersion = schemaVersion
+    }
+}
+
 /// A single file's status in the working copy.
 public struct FileStatus: Hashable, Sendable, Identifiable {
     public var path: String

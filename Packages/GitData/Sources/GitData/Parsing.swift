@@ -209,6 +209,118 @@ enum StatusParser {
     }
 }
 
+// MARK: - Commit annotation parsers
+
+/// Parses git trailers from a commit body.
+///
+/// Git trailers are `Token: value` lines at the end of the commit message, separated from
+/// the prose body by a blank line (git's own convention, per `git-interpret-trailers(1)`).
+/// The last paragraph is a trailer block when every non-empty line matches the token pattern.
+enum TrailerParser {
+    // RFC 5322-style token: letter followed by letters, digits, or hyphens.
+    private static let trailerLine = try! NSRegularExpression(
+        pattern: #"^([A-Za-z][A-Za-z0-9-]*):\s+(.+)$"#, options: [])
+
+    static func parse(_ body: String) -> [CommitTrailer] {
+        guard let block = trailerBlock(in: body) else { return [] }
+        return block.compactMap { line -> CommitTrailer? in
+            let r = NSRange(line.startIndex..., in: line)
+            guard let m = trailerLine.firstMatch(in: line, range: r) else { return nil }
+            let key = String(line[Range(m.range(at: 1), in: line)!])
+            let value = String(line[Range(m.range(at: 2), in: line)!])
+            return CommitTrailer(key: key, value: value)
+        }
+    }
+
+    static func bodyWithoutTrailers(_ body: String) -> String {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let paragraphs = trimmed.components(separatedBy: "\n\n")
+        // If the last paragraph is all trailers, drop it (works for single-paragraph bodies too).
+        guard isTrailerParagraph(paragraphs.last ?? "") else { return trimmed }
+        return paragraphs.dropLast().joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func trailerBlock(in body: String) -> [String]? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let paragraphs = trimmed.components(separatedBy: "\n\n")
+        guard let last = paragraphs.last, isTrailerParagraph(last) else { return nil }
+        return last.components(separatedBy: "\n").filter { !$0.isEmpty }
+    }
+
+    private static func isTrailerParagraph(_ text: String) -> Bool {
+        let lines = text.components(separatedBy: "\n")
+        guard !lines.isEmpty else { return false }
+        return lines.allSatisfy { line in
+            if line.isEmpty { return true }
+            let r = NSRange(line.startIndex..., in: line)
+            return trailerLine.firstMatch(in: line, range: r) != nil
+        }
+    }
+}
+
+/// Parses a Conventional Commits subject line: `type(scope)!: description`.
+enum ConventionalCommitParser {
+    private static let regex = try! NSRegularExpression(
+        pattern: #"^([a-z][a-z0-9]*)(?:\(([^)]*)\))?(!)?:\s+(.+)$"#, options: [])
+
+    static func parse(_ subject: String) -> ConventionalCommit? {
+        let r = NSRange(subject.startIndex..., in: subject)
+        guard let m = regex.firstMatch(in: subject, range: r) else { return nil }
+        let type = String(subject[Range(m.range(at: 1), in: subject)!])
+        let scope: String?
+        if m.range(at: 2).location != NSNotFound,
+           let scopeRange = Range(m.range(at: 2), in: subject) {
+            let s = String(subject[scopeRange])
+            scope = s.isEmpty ? nil : s
+        } else {
+            scope = nil
+        }
+        let isBreaking = m.range(at: 3).location != NSNotFound
+        let description = String(subject[Range(m.range(at: 4), in: subject)!])
+        return ConventionalCommit(type: type, scope: scope, isBreaking: isBreaking,
+                                  description: description)
+    }
+}
+
+/// Detects issue/ticket references in commit text via pure regex.
+///
+/// Recognises:
+/// - `#123` — GitHub / GitLab numeric refs.
+/// - `PREFIX-123` — Jira, Linear, and similar alphanumeric prefixes (2–10 uppercase letters).
+enum IssueRefParser {
+    private static let numericRegex = try! NSRegularExpression(
+        pattern: #"(?<![&\w])#(\d+)\b"#, options: [])
+    private static let prefixedRegex = try! NSRegularExpression(
+        pattern: #"\b([A-Z][A-Z0-9]{1,9}-\d+)\b"#, options: [])
+
+    static func parse(subject: String, body: String) -> [IssueRef] {
+        var refs: [IssueRef] = []
+        var seen = Set<String>()
+        for text in [subject, body] {
+            let ns = text as NSString
+            let full = NSRange(location: 0, length: ns.length)
+            for m in numericRegex.matches(in: text, range: full) {
+                if let numRange = Range(m.range(at: 1), in: text), let n = Int(text[numRange]) {
+                    let raw = "#\(n)"
+                    if seen.insert(raw).inserted {
+                        refs.append(IssueRef(raw: raw, style: .numeric(n)))
+                    }
+                }
+            }
+            for m in prefixedRegex.matches(in: text, range: full) {
+                let raw = ns.substring(with: m.range)
+                if seen.insert(raw).inserted {
+                    refs.append(IssueRef(raw: raw, style: .prefixed(raw)))
+                }
+            }
+        }
+        return refs
+    }
+}
+
 extension ISO8601DateFormatter {
     static let gitISO: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()

@@ -53,6 +53,7 @@ final class FilesViewController: NSViewController, PresenterObserving {
     private let outlineView = FilesOutlineView()
     private let scrollView = NSScrollView()
     private let commitSummary = CommitSummaryView()
+    private let headerDivider = NSBox()
     private let emptyLabel = NSTextField(labelWithString: "No changes")
     private let filterBar = NSView()
     private let filterButton = NSButton()
@@ -90,6 +91,12 @@ final class FilesViewController: NSViewController, PresenterObserving {
         scrollView.borderType = .noBorder
 
         commitSummary.translatesAutoresizingMaskIntoConstraints = false
+        // No callback work needed — the header is a direct subview now, so collapse/expand
+        // is a pure auto-layout animation driven from inside CommitSummaryView itself.
+        commitSummary.onCollapseToggle = nil
+
+        headerDivider.boxType = .separator
+        headerDivider.translatesAutoresizingMaskIntoConstraints = false
 
         emptyLabel.font = Theme.Font.secondary
         emptyLabel.textColor = .tertiaryLabelColor
@@ -100,6 +107,7 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
         let container = NSView()
         container.addSubview(commitSummary)
+        container.addSubview(headerDivider)
         container.addSubview(filterBar)
         container.addSubview(scrollView)
         container.addSubview(emptyLabel)
@@ -108,6 +116,17 @@ final class FilesViewController: NSViewController, PresenterObserving {
         filterBarHeight = filterBar.heightAnchor.constraint(equalToConstant: 0)
             .id("FilesView.filterBar.height")
 
+        // Header sizing — fully specified, no manual height bookkeeping. The commit summary
+        // sits directly in the container with its intrinsic height driving the chain. A
+        // multiplier cap (≤ 55% of container) keeps the file list visible even when a commit
+        // message is long; the body label truncates instead of inner-scrolling. With nothing
+        // wrapping the summary in an NSScrollView, `isHidden` changes inside its NSStackView
+        // propagate cleanly through implicit animation.
+        let headerCap = commitSummary.heightAnchor.constraint(
+            lessThanOrEqualTo: container.heightAnchor, multiplier: 0.55)
+            .id("FilesView.commitSummary.cap")
+        headerCap.priority = .required
+
         NSLayoutConstraint.activate([
             commitSummary.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor)
                 .id("FilesView.commitSummary.top"),
@@ -115,8 +134,16 @@ final class FilesViewController: NSViewController, PresenterObserving {
                 .id("FilesView.commitSummary.leading"),
             commitSummary.trailingAnchor.constraint(equalTo: container.trailingAnchor)
                 .id("FilesView.commitSummary.trailing"),
+            headerCap,
 
-            filterBar.topAnchor.constraint(equalTo: commitSummary.bottomAnchor)
+            headerDivider.topAnchor.constraint(equalTo: commitSummary.bottomAnchor)
+                .id("FilesView.headerDivider.top"),
+            headerDivider.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                .id("FilesView.headerDivider.leading"),
+            headerDivider.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                .id("FilesView.headerDivider.trailing"),
+
+            filterBar.topAnchor.constraint(equalTo: headerDivider.bottomAnchor)
                 .id("FilesView.filterBar.top"),
             filterBar.leadingAnchor.constraint(equalTo: container.leadingAnchor)
                 .id("FilesView.filterBar.leading"),
@@ -920,15 +947,20 @@ private final class CommitSummaryView: NSView {
     private let dateLabel = NSTextField(labelWithString: "")
     private let shaPill = ShaPill()
 
-    private let noteBlock = NSView()
-    private let noteBar = NSView()
-    private let noteCaption = NSTextField(labelWithString: "NOTE")
-    private let noteBody = NSTextField(labelWithString: "")
+    /// Horizontal chip strip: conventional-commit type, scope, breaking flag, trailer refs.
+    private let chipRow = NSStackView()
+    /// Vertical stack of NoteBlockViews — one per loaded note ref. Hidden when empty.
+    private let notesStack = NSStackView()
+    /// Small disclosure chevron in the identity row. Toggling shows/hides body + notes.
+    private let collapseButton = NSButton()
+    /// Whether the body + notes are hidden so the file list gets more room. Persists for the session.
+    private(set) var isCollapsed = false
+    /// Called when the collapse state changes so the parent can re-measure the header height.
+    var onCollapseToggle: (() -> Void)?
 
     private let stack = NSStackView()
     private let statsDivider = NSBox()
     private let statsRow = NSStackView()
-    private let divider = NSBox()
 
     private static let hInset: CGFloat = 20
     private static let topInset: CGFloat = 16
@@ -940,6 +972,7 @@ private final class CommitSummaryView: NSView {
     private static let bodyFont = NSFont.systemFont(ofSize: 13, weight: .regular)
     private static let subjectLineMultiple: CGFloat = 1.12
     private static let bodyLineMultiple: CGFloat = 1.42
+    private static let bodyMaxLines: Int = 3
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -955,10 +988,15 @@ private final class CommitSummaryView: NSView {
         // Body: PRIMARY text color, system body size, generous line-height for sustained reading.
         bodyLabel.font = Self.bodyFont
         bodyLabel.textColor = .labelColor
-        bodyLabel.maximumNumberOfLines = 12
-        bodyLabel.lineBreakMode = .byWordWrapping
+        // Soft cap on lines: long agentic narratives truncate with a tooltip rather than
+        // pushing the file list off-screen. Vertical compression resistance is lowered so
+        // the parent's multiplier cap (≤ 55% of pane) can squeeze the label further when the
+        // window is short, leaving every other element in the summary at its intrinsic size.
+        bodyLabel.maximumNumberOfLines = Self.bodyMaxLines
+        bodyLabel.lineBreakMode = .byTruncatingTail
         bodyLabel.cell?.wraps = true
         bodyLabel.cell?.isScrollable = false
+        bodyLabel.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         // Identity strip: ●  Author Name    2 days ago                  d062863
         authorLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -986,61 +1024,37 @@ private final class CommitSummaryView: NSView {
         identityRow.addArrangedSubview(spacer)
         identityRow.addArrangedSubview(shaPill)
 
-        // Note: editorial annotation with a colored left bar + small caption + readable body.
-        noteBlock.translatesAutoresizingMaskIntoConstraints = false
-        noteBar.wantsLayer = true
-        noteBar.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.65).cgColor
-        noteBar.layer?.cornerRadius = 1.5
-        noteBar.translatesAutoresizingMaskIntoConstraints = false
-
-        noteCaption.font = .systemFont(ofSize: 10, weight: .bold)
-        noteCaption.textColor = .secondaryLabelColor
-        noteCaption.stringValue = "NOTE"
-        // Tracked-out small caps feel — a tiny letter-spaced caption.
-        noteCaption.attributedStringValue = NSAttributedString(
-            string: "NOTE",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-                .foregroundColor: NSColor.secondaryLabelColor,
-                .kern: 1.2,
-            ])
-        noteCaption.translatesAutoresizingMaskIntoConstraints = false
-
-        noteBody.font = Self.bodyFont
-        noteBody.textColor = .labelColor
-        noteBody.maximumNumberOfLines = 8
-        noteBody.lineBreakMode = .byWordWrapping
-        noteBody.cell?.wraps = true
-        noteBody.cell?.isScrollable = false
-        noteBody.translatesAutoresizingMaskIntoConstraints = false
-
-        noteBlock.addSubview(noteBar)
-        noteBlock.addSubview(noteCaption)
-        noteBlock.addSubview(noteBody)
+        // Collapse/expand chevron — sits right of the SHA pill, always visible when a commit is shown.
+        collapseButton.isBordered = false
+        collapseButton.setButtonType(.momentaryPushIn)
+        collapseButton.imageScaling = .scaleProportionallyDown
+        collapseButton.contentTintColor = .tertiaryLabelColor
+        collapseButton.toolTip = "Show/hide commit body and notes"
+        collapseButton.target = self
+        collapseButton.action = #selector(toggleCollapse)
+        collapseButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            noteBar.leadingAnchor.constraint(equalTo: noteBlock.leadingAnchor)
-                .id("CommitSummary.noteBar.leading"),
-            noteBar.topAnchor.constraint(equalTo: noteBlock.topAnchor, constant: 2)
-                .id("CommitSummary.noteBar.top"),
-            noteBar.bottomAnchor.constraint(equalTo: noteBlock.bottomAnchor, constant: -2)
-                .id("CommitSummary.noteBar.bottom"),
-            noteBar.widthAnchor.constraint(equalToConstant: 3)
-                .id("CommitSummary.noteBar.width"),
-            noteCaption.leadingAnchor.constraint(equalTo: noteBar.trailingAnchor, constant: 12)
-                .id("CommitSummary.noteCaption.leading"),
-            noteCaption.topAnchor.constraint(equalTo: noteBlock.topAnchor)
-                .id("CommitSummary.noteCaption.top"),
-            noteCaption.trailingAnchor.constraint(lessThanOrEqualTo: noteBlock.trailingAnchor)
-                .id("CommitSummary.noteCaption.trailing"),
-            noteBody.leadingAnchor.constraint(equalTo: noteCaption.leadingAnchor)
-                .id("CommitSummary.noteBody.leading"),
-            noteBody.topAnchor.constraint(equalTo: noteCaption.bottomAnchor, constant: 4)
-                .id("CommitSummary.noteBody.top"),
-            noteBody.trailingAnchor.constraint(equalTo: noteBlock.trailingAnchor)
-                .id("CommitSummary.noteBody.trailing"),
-            noteBody.bottomAnchor.constraint(equalTo: noteBlock.bottomAnchor)
-                .id("CommitSummary.noteBody.bottom"),
+            collapseButton.widthAnchor.constraint(equalToConstant: 16)
+                .id("CommitSummary.collapseButton.width"),
+            collapseButton.heightAnchor.constraint(equalToConstant: 16)
+                .id("CommitSummary.collapseButton.height"),
         ])
+        identityRow.addArrangedSubview(collapseButton)
+        updateCollapseButton()
+
+        // Chip row: small pills for conv. commit type/scope, trailers, and issue refs.
+        chipRow.orientation = .horizontal
+        chipRow.alignment = .centerY
+        chipRow.spacing = 6
+        chipRow.translatesAutoresizingMaskIntoConstraints = false
+        chipRow.isHidden = true
+
+        // Notes stack: one NoteBlockView per loaded note ref (dynamic, cleared on each configure).
+        notesStack.orientation = .vertical
+        notesStack.alignment = .leading
+        notesStack.spacing = 12
+        notesStack.translatesAutoresizingMaskIntoConstraints = false
+        notesStack.isHidden = true
 
         // Footer: hairline divider, then a small row — files left, +adds/−dels right.
         statsDivider.boxType = .separator
@@ -1062,14 +1076,14 @@ private final class CommitSummaryView: NSView {
         statsRow.addArrangedSubview(statsSpacer)
         statsRow.addArrangedSubview(statsLabel)
 
-        // Vertical stack: subject → identity → body → note. Footer pins below independently.
+        // Vertical stack: subject → identity → body → chips → notes. Footer pins below.
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         for (view, name) in zip(
-            [subjectLabel, identityRow, bodyLabel, noteBlock],
-            ["subject", "identity", "body", "note"]
+            [subjectLabel, identityRow, bodyLabel, chipRow, notesStack],
+            ["subject", "identity", "body", "chips", "notes"]
         ) {
             view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             stack.addArrangedSubview(view)
@@ -1077,18 +1091,15 @@ private final class CommitSummaryView: NSView {
                 .id("CommitSummary.\(name).fillWidth")
                 .isActive = true
         }
-        // Rhythm: subject and identity sit close; body breathes; note breathes more.
+        // Rhythm: subject and identity sit close; body breathes; chips and notes breathe more.
         stack.setCustomSpacing(10, after: subjectLabel)
         stack.setCustomSpacing(16, after: identityRow)
-        stack.setCustomSpacing(16, after: bodyLabel)
-
-        divider.boxType = .separator
-        divider.translatesAutoresizingMaskIntoConstraints = false
+        stack.setCustomSpacing(12, after: bodyLabel)
+        stack.setCustomSpacing(12, after: chipRow)
 
         addSubview(stack)
         addSubview(statsDivider)
         addSubview(statsRow)
-        addSubview(divider)
 
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor, constant: Self.topInset)
@@ -1111,15 +1122,8 @@ private final class CommitSummaryView: NSView {
                 .id("CommitSummary.statsRow.leading"),
             statsRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.hInset)
                 .id("CommitSummary.statsRow.trailing"),
-            statsRow.bottomAnchor.constraint(equalTo: divider.topAnchor, constant: -Self.bottomInset)
+            statsRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.bottomInset)
                 .id("CommitSummary.statsRow.bottom"),
-
-            divider.leadingAnchor.constraint(equalTo: leadingAnchor)
-                .id("CommitSummary.divider.leading"),
-            divider.trailingAnchor.constraint(equalTo: trailingAnchor)
-                .id("CommitSummary.divider.trailing"),
-            divider.bottomAnchor.constraint(equalTo: bottomAnchor)
-                .id("CommitSummary.divider.bottom"),
         ])
     }
 
@@ -1132,8 +1136,10 @@ private final class CommitSummaryView: NSView {
         let bodyWidth = bounds.width - Self.hInset * 2
         subjectLabel.preferredMaxLayoutWidth = bodyWidth
         bodyLabel.preferredMaxLayoutWidth = bodyWidth
-        // Note body sits indented past the accent bar (3pt) + gap (12pt).
-        noteBody.preferredMaxLayoutWidth = bodyWidth - 15
+        // Propagate width to each note block so its body label wraps correctly.
+        for case let block as NoteBlockView in notesStack.arrangedSubviews {
+            block.preferredBodyWidth = bodyWidth
+        }
     }
 
     // MARK: Attributed-string helpers — used so multi-line subject/body get proper line-height.
@@ -1156,6 +1162,51 @@ private final class CommitSummaryView: NSView {
             .foregroundColor: color,
             .paragraphStyle: paragraph(lineHeightMultiple: lineHeightMultiple, lineBreak: lineBreak),
         ])
+    }
+
+    @objc private func toggleCollapse() {
+        isCollapsed.toggle()
+        updateCollapseButton()
+        // Let the parent prep (e.g. reset its scroll position) before we drive the layout pass.
+        onCollapseToggle?()
+        // Pre-set the wrapping width so the label measures its intrinsic height at the correct
+        // width when maximumNumberOfLines changes — before the constraint engine runs. Without
+        // this the subject snaps to its new line count with a stale (or zero) wrap width and
+        // then jumps again once layout() sets the real width.
+        let bodyWidth = bounds.width - Self.hInset * 2
+        if bodyWidth > 0 {
+            subjectLabel.preferredMaxLayoutWidth = bodyWidth
+            bodyLabel.preferredMaxLayoutWidth = bodyWidth
+        }
+        // Single animated layout pass: flipping visibility on `bodyLabel`/`notesStack` and
+        // changing `subjectLabel.maximumNumberOfLines` mutates the intrinsic content height,
+        // and the constraint chain (vStack → divider → statsRow) carries that change all the
+        // way up. `allowsImplicitAnimation` makes the resulting frame deltas animate.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.allowsImplicitAnimation = true
+            applyCollapseState()
+            window?.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func updateCollapseButton() {
+        let name = isCollapsed ? "chevron.down" : "chevron.up"
+        collapseButton.image = NSImage(systemSymbolName: name,
+                                       accessibilityDescription: isCollapsed ? "Expand" : "Collapse")
+    }
+
+    fileprivate func applyCollapseState() {
+        let hasBody = !bodyLabel.attributedStringValue.string.isEmpty
+        bodyLabel.isHidden = isCollapsed || !hasBody
+        notesStack.isHidden = isCollapsed || notesStack.arrangedSubviews.isEmpty
+        // Chips stay visible in both states — they're the compact metadata summary.
+        // Subject stays visible (truncated to 1 line when collapsed).
+        subjectLabel.maximumNumberOfLines = isCollapsed ? 1 : 3
+        // Don't call needsLayout here: when toggling, the animation block drives the single
+        // layout pass via layoutSubtreeIfNeeded(). A competing needsLayout schedules a
+        // non-animated pass that fires before the animation context, causing the jump.
     }
 
     func setStats(_ text: String) {
@@ -1194,9 +1245,10 @@ private final class CommitSummaryView: NSView {
             subjectLabel.isHidden = true
             identityRow.isHidden = true
             bodyLabel.isHidden = true
-            noteBlock.isHidden = true
-        case .commit(let commit, let note):
-            configureCommit(commit, note: note)
+            chipRow.isHidden = true
+            notesStack.isHidden = true
+        case .commit(let commit, let notes, let aiAuthorship):
+            configureCommit(commit, notes: notes, aiAuthorship: aiAuthorship)
         case .workingCopy(let branch, let staged, let unstaged, let untracked, let prepared):
             configureWorkingCopy(branch: branch, staged: staged, unstaged: unstaged,
                                  untracked: untracked, prepared: prepared)
@@ -1237,18 +1289,27 @@ private final class CommitSummaryView: NSView {
             bodyLabel.toolTip = draft
         }
 
-        noteBlock.isHidden = true
+        collapseButton.isHidden = true
+        chipRow.isHidden = true
+        notesStack.isHidden = true
         needsLayout = true
     }
 
-    private func configureCommit(_ commit: Commit?, note: CommitDetailPresenter.NoteState) {
+    private func configureCommit(_ commit: Commit?,
+                                  notes: [CommitDetailPresenter.NoteEntry],
+                                  aiAuthorship: AIAuthorshipRecord?) {
+        isCollapsed = false
+        updateCollapseButton()
         guard let commit else {
             subjectLabel.isHidden = true
             identityRow.isHidden = true
             bodyLabel.isHidden = true
-            noteBlock.isHidden = true
+            collapseButton.isHidden = true
+            chipRow.isHidden = true
+            notesStack.isHidden = true
             return
         }
+        collapseButton.isHidden = false
         subjectLabel.isHidden = false
         identityRow.isHidden = false
 
@@ -1272,33 +1333,123 @@ private final class CommitSummaryView: NSView {
         shaPill.text = String(commit.sha.prefix(7))
         shaPill.toolTip = commit.sha
 
-        let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        if body.isEmpty {
-            bodyLabel.isHidden = true
+        // Show prose body without trailer lines (trailers appear in chips below).
+        // Always update the attributed string so switching commits while collapsed
+        // doesn't show stale content when the user later expands.
+        let prose = commit.bodyWithoutTrailers
+        if prose.isEmpty {
+            bodyLabel.attributedStringValue = NSAttributedString()
             bodyLabel.toolTip = nil
         } else {
-            bodyLabel.isHidden = false
             bodyLabel.attributedStringValue = Self.styled(
-                body, font: Self.bodyFont, color: .labelColor,
+                prose, font: Self.bodyFont, color: .labelColor,
                 lineHeightMultiple: Self.bodyLineMultiple)
-            bodyLabel.toolTip = body
+            bodyLabel.toolTip = prose
         }
+        bodyLabel.isHidden = prose.isEmpty || isCollapsed
 
-        // Only a loaded, non-empty note shows; loading and unavailable both stay hidden.
-        if case .loaded(let text) = note,
-           case let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines),
-           !trimmed.isEmpty {
-            noteBlock.isHidden = false
-            noteBody.attributedStringValue = Self.styled(
-                trimmed, font: Self.bodyFont, color: .labelColor,
-                lineHeightMultiple: Self.bodyLineMultiple)
-            noteBody.toolTip = trimmed
-        } else {
-            noteBlock.isHidden = true
-            noteBody.toolTip = nil
-        }
+        // Subject shows up to 3 lines expanded, 1 line collapsed.
+        subjectLabel.maximumNumberOfLines = isCollapsed ? 1 : 3
+
+        // Chips: conventional commit type/scope/breaking + key trailers + issue refs + AI authorship.
+        rebuildChips(for: commit, aiAuthorship: aiAuthorship)
+
+        // Notes: one block per loaded note ref (hidden when collapsed).
+        rebuildNotes(notes)
 
         needsLayout = true
+    }
+
+    private func clearStack(_ stack: NSStackView) {
+        stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
+    }
+
+    private func rebuildChips(for commit: Commit, aiAuthorship: AIAuthorshipRecord?) {
+        clearStack(chipRow)
+
+        // Conventional commit type + scope + breaking flag.
+        if let conv = commit.conventional {
+            chipRow.addArrangedSubview(
+                BadgeLabel(text: conv.type, tint: Self.typeColor(conv.type),
+                           font: Theme.Font.pill, filled: true))
+            if let scope = conv.scope, !scope.isEmpty {
+                chipRow.addArrangedSubview(
+                    BadgeLabel(text: scope, tint: .systemGray, font: Theme.Font.pill, filled: false))
+            }
+            if conv.isBreaking {
+                chipRow.addArrangedSubview(
+                    BadgeLabel(text: "breaking", tint: .systemRed, font: Theme.Font.pill, filled: false))
+            }
+        }
+
+        // Key trailers: reviewers, co-authors, issue links.
+        for trailer in commit.trailers where Self.isDisplayTrailer(trailer.key) {
+            let text = Self.trailerChipText(trailer)
+            chipRow.addArrangedSubview(
+                BadgeLabel(text: text, tint: .systemGray, font: Theme.Font.pill, filled: false))
+        }
+
+        // Issue refs not already expressed by a trailer chip (avoids showing #123 twice when
+        // "Fixes: #123" is already shown as a trailer).
+        let trailerValues = commit.trailers.map(\.value)
+        for ref in commit.issueRefs
+            where !trailerValues.contains(where: { $0.contains(ref.raw) }) {
+            chipRow.addArrangedSubview(
+                BadgeLabel(text: ref.raw, tint: .systemBlue, font: Theme.Font.pill, filled: false))
+        }
+
+        // AI authorship chip: summarise which agents contributed lines to this commit.
+        if let aiAuthorship {
+            let totals = aiAuthorship.authorTotals
+            if !totals.isEmpty {
+                let agents = totals.sorted { $0.value > $1.value }
+                    .prefix(2).map(\.key).joined(separator: " · ")
+                let label = "✦ \(agents)"
+                chipRow.addArrangedSubview(
+                    BadgeLabel(text: label, tint: .systemPurple, font: Theme.Font.pill, filled: false))
+            }
+        }
+
+        chipRow.isHidden = chipRow.arrangedSubviews.isEmpty
+    }
+
+    private func rebuildNotes(_ notes: [CommitDetailPresenter.NoteEntry]) {
+        clearStack(notesStack)
+        for entry in notes {
+            let block = NoteBlockView(caption: entry.name.uppercased(), body: entry.text)
+            notesStack.addArrangedSubview(block)
+            block.widthAnchor.constraint(equalTo: notesStack.widthAnchor)
+                .id("CommitSummary.noteBlock.\(entry.name).width").isActive = true
+        }
+        notesStack.isHidden = notes.isEmpty || isCollapsed
+    }
+
+    private static func isDisplayTrailer(_ key: String) -> Bool {
+        switch key.lowercased() {
+        case "reviewed-by", "co-authored-by", "co-author",
+             "fixes", "closes", "resolves", "refs": return true
+        default: return false
+        }
+    }
+
+    private static func trailerChipText(_ trailer: CommitTrailer) -> String {
+        // Strip email from identity values: "Alice <alice@example.com>" → "Alice".
+        let valueDisplay = trailer.value.replacingOccurrences(
+            of: #"\s*<[^>]+>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        return "\(trailer.key): \(valueDisplay)"
+    }
+
+    private static func typeColor(_ type: String) -> NSColor {
+        switch type {
+        case "feat": return .systemBlue
+        case "fix":  return .systemOrange
+        case "docs": return .systemTeal
+        case "test": return .systemGreen
+        case "perf": return .systemPurple
+        case "refactor": return .systemIndigo
+        default:     return .systemGray
+        }
     }
 
     /// Deterministic color per author so the same person always gets the same dot —
@@ -1369,6 +1520,83 @@ private final class ShaPill: NSView {
         setContentHuggingPriority(.required, for: .horizontal)
         setContentCompressionResistancePriority(.required, for: .horizontal)
     }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - Note block view
+
+/// An editorial annotation block: a colored left bar, a small caption ("NOTE", "REVIEW", …),
+/// and the note body text. Used by CommitSummaryView to display one note per ref.
+@objc(NoteBlockView)
+private final class NoteBlockView: NSView {
+    private let bar = NSView()
+    private let caption = NSTextField(labelWithString: "")
+    private let body = NSTextField(labelWithString: "")
+
+    var preferredBodyWidth: CGFloat = 0 {
+        didSet { body.preferredMaxLayoutWidth = max(0, preferredBodyWidth - 15) }
+    }
+
+    init(caption: String, body bodyText: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.65).cgColor
+        bar.layer?.cornerRadius = 1.5
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        self.caption.attributedStringValue = NSAttributedString(
+            string: caption,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .kern: 1.2,
+            ])
+        self.caption.translatesAutoresizingMaskIntoConstraints = false
+
+        self.body.font = .systemFont(ofSize: 13, weight: .regular)
+        self.body.textColor = .labelColor
+        self.body.maximumNumberOfLines = 0
+        self.body.lineBreakMode = .byWordWrapping
+        self.body.cell?.wraps = true
+        self.body.cell?.isScrollable = false
+        self.body.stringValue = bodyText
+        self.body.toolTip = bodyText
+        self.body.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(bar)
+        addSubview(self.caption)
+        addSubview(self.body)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: leadingAnchor)
+                .id("NoteBlockView.bar.leading"),
+            bar.topAnchor.constraint(equalTo: topAnchor, constant: 2)
+                .id("NoteBlockView.bar.top"),
+            bar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
+                .id("NoteBlockView.bar.bottom"),
+            bar.widthAnchor.constraint(equalToConstant: 3)
+                .id("NoteBlockView.bar.width"),
+
+            self.caption.leadingAnchor.constraint(equalTo: bar.trailingAnchor, constant: 12)
+                .id("NoteBlockView.caption.leading"),
+            self.caption.topAnchor.constraint(equalTo: topAnchor)
+                .id("NoteBlockView.caption.top"),
+            self.caption.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor)
+                .id("NoteBlockView.caption.trailing"),
+
+            self.body.leadingAnchor.constraint(equalTo: self.caption.leadingAnchor)
+                .id("NoteBlockView.body.leading"),
+            self.body.topAnchor.constraint(equalTo: self.caption.bottomAnchor, constant: 4)
+                .id("NoteBlockView.body.top"),
+            self.body.trailingAnchor.constraint(equalTo: trailingAnchor)
+                .id("NoteBlockView.body.trailing"),
+            self.body.bottomAnchor.constraint(equalTo: bottomAnchor)
+                .id("NoteBlockView.body.bottom"),
+        ])
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 }

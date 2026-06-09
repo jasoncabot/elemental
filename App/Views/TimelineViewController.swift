@@ -89,7 +89,8 @@ final class TimelineViewController: NSViewController, PresenterObserving {
         tableView.addTableColumn(col)
         tableView.headerView = nil
         tableView.backgroundColor = .clear
-        tableView.rowHeight = Theme.Metric.timelineRowHeight
+        tableView.rowHeight = Theme.Metric.timelineRowHeight  // default height
+        tableView.usesAutomaticRowHeights = false
         tableView.focusRingType = .none
         tableView.intercellSpacing = NSSize(width: 0, height: 6)
         tableView.selectionHighlightStyle = .regular
@@ -223,13 +224,25 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     // MARK: - Expand / collapse
 
     private func toggleExpand(at row: Int) {
-        guard let sha = presenter?.commit(atRow: row)?.sha else { return }
+        guard let item = presenter?.item(atRow: row),
+              case .commit(let commit) = item else { return }
+        let sha = commit.sha
         if expandedSHAs.contains(sha) { expandedSHAs.remove(sha) } else { expandedSHAs.insert(sha) }
-        // Update the row's content (body shown/hidden, chevron flipped) then animate its height.
-        tableView.reloadData(forRowIndexes: IndexSet(integer: row),
-                             columnIndexes: IndexSet(integer: 0))
+        let nowExpanded = expandedSHAs.contains(sha)
+
+        // Snap content immediately — configure() updates label text, line count, body visibility,
+        // and chevron before any animation runs. Because the cell has masksToBounds = true, any
+        // content that extends beyond the current row height is clipped and invisible.
+        // Only the row height itself is then animated, so the cell progressively reveals (or hides)
+        // the already-correct content. Putting configure() inside allowsImplicitAnimation would
+        // animate the subject label's own frame (height changing as maximumNumberOfLines flips),
+        // which is what made the title appear to fly in from the top.
+        if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? TimelineCellView {
+            cell.configure(with: commit, expanded: nowExpanded)
+        }
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.16
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             ctx.allowsImplicitAnimation = true
             tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integer: row))
         }
@@ -238,7 +251,7 @@ final class TimelineViewController: NSViewController, PresenterObserving {
     // MARK: - Context menu
 
     private func contextMenu(for row: Int) -> NSMenu? {
-        guard let commit = presenter?.commit(atRow: row) else { return nil }
+        guard let commit = presenter?.item(atRow: row)?.commit else { return nil }
 
         let menu = NSMenu()
 
@@ -444,43 +457,60 @@ extension TimelineViewController: NSTableViewDataSource, NSTableViewDelegate {
         TimelineRowView()
     }
 
-    /// Collapsed rows are a constant height (no text measurement, so virtualisation is preserved);
-    /// only expanded rows — a handful, always on-screen — compute their height from the content.
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        let collapsed = Theme.Metric.timelineRowHeight
-        guard !expandedSHAs.isEmpty,
-              let commit = presenter?.residentCommit(atRow: row),
-              expandedSHAs.contains(commit.sha) else { return collapsed }
-        return TimelineCellView.expandedHeight(for: commit, width: tableView.bounds.width)
-    }
-
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        // commit(atRow:) returns nil for a not-yet-resident page and schedules its load; the
-        // presenter notifies on arrival and reloadFromPresenter refreshes the visible rows.
-        guard let commit = presenter?.commit(atRow: row) else {
+        // item(atRow:) returns nil for a not-yet-resident page and schedules its load.
+        guard let item = presenter?.item(atRow: row) else {
             let id = NSUserInterfaceItemIdentifier("TimelinePlaceholder")
             return tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView
                 ?? { let v = NSTableCellView(); v.identifier = id; return v }()
         }
 
-        let id = NSUserInterfaceItemIdentifier("TimelineCell")
-        let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TimelineCellView)
-            ?? TimelineCellView(identifier: id)
-        cell.configure(with: commit, expanded: expandedSHAs.contains(commit.sha))
-        cell.onToggleExpand = { [weak self, weak cell] in
-            guard let self, let cell else { return }
-            let r = self.tableView.row(for: cell)
-            guard r >= 0 else { return }
-            self.toggleExpand(at: r)
+        switch item {
+        case .commit(let commit):
+            let id = NSUserInterfaceItemIdentifier("TimelineCell")
+            let cell = (tableView.makeView(withIdentifier: id, owner: self) as? TimelineCellView)
+                ?? TimelineCellView(identifier: id)
+            cell.configure(with: commit, expanded: expandedSHAs.contains(commit.sha))
+            cell.onToggleExpand = { [weak self, weak cell] in
+                guard let self, let cell else { return }
+                let r = self.tableView.row(for: cell)
+                guard r >= 0 else { return }
+                self.toggleExpand(at: r)
+            }
+            return cell
+
+        case .issue(let issue):
+            let id = NSUserInterfaceItemIdentifier("IssueCell")
+            let cell = (tableView.makeView(withIdentifier: id, owner: self) as? IssueItemCellView)
+                ?? IssueItemCellView()
+            cell.identifier = id
+            cell.configure(with: issue)
+            return cell
         }
-        return cell
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        // Collapsed rows use a fixed height — no text measurement, so virtualisation is preserved.
+        let collapsed = Theme.Metric.timelineRowHeight
+        guard !expandedSHAs.isEmpty,
+              let item = presenter?.item(atRow: row),
+              case .commit(let commit) = item,
+              expandedSHAs.contains(commit.sha) else { return collapsed }
+        let width = tableView.tableColumns.first?.width ?? tableView.bounds.width - 32
+        return TimelineCellView.rowHeight(for: commit, expanded: true, width: width)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isUpdatingSelection else { return }
         let row = tableView.selectedRow
-        guard let sha = presenter?.commit(atRow: row)?.sha else { return }
-        commitSelected(sha: sha)
+        guard row >= 0, let item = presenter?.item(atRow: row) else { return }
+        switch item {
+        case .commit(let commit):
+            commitSelected(sha: commit.sha)
+        case .issue:
+            if workingCopySelected { workingCopySelected = false; workingCopyRow.isSelected = false }
+            delegate?.timelineViewController(self, didSelectSHA: nil)
+        }
     }
 }
 
@@ -674,8 +704,14 @@ private final class TimelineCellView: NSTableCellView {
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        translatesAutoresizingMaskIntoConstraints = false
 
         wantsLayer = true
+        // Clip subviews to the cell's animated bounds. Without this the vStack (which sizes
+        // to its full content height) would overflow while the row height animates, making
+        // the subject label appear to jump. With clipping, content is progressively revealed
+        // as the cell grows — a natural expand/collapse feel.
+        layer?.masksToBounds = true
 
         // Card layer sits behind all subviews and provides the frosted-glass card feel.
         cardLayer.cornerRadius = 10
@@ -752,6 +788,9 @@ private final class TimelineCellView: NSTableCellView {
                 .id("TimelineCell.vStack.trailing"),
             vStack.topAnchor.constraint(equalTo: topAnchor, constant: Self.topInset)
                 .id("TimelineCell.vStack.top"),
+            // No bottom constraint: the vStack sizes to its intrinsic content height so it is
+            // never compressed during height animations. The cell's masksToBounds clips overflow
+            // while the row animates, giving a clean reveal rather than a squish-and-jump.
             // A `.leading`-aligned stack sizes children to their intrinsic width and won't stretch
             // them — so pin the wrapping labels and the meta row to the full text width, otherwise
             // the subject/body refuse to wrap and the "more" control floats mid-row.
@@ -787,13 +826,6 @@ private final class TimelineCellView: NSTableCellView {
         let barH = max(0, h - barPad * 2)
         accentBarLayer.frame = CGRect(x: 13, y: barPad, width: 3, height: barH)
         CATransaction.commit()
-
-        // Multiline labels need an explicit wrapping width to report the right height.
-        let width = vStack.bounds.width
-        if width > 0 {
-            subjectLabel.preferredMaxLayoutWidth = width
-            bodyLabel.preferredMaxLayoutWidth = width
-        }
     }
 
     override func updateLayer() {
@@ -880,6 +912,17 @@ private final class TimelineCellView: NSTableCellView {
 
     func configure(with commit: Commit, expanded: Bool) {
         self.expanded = expanded
+
+        // Pre-set wrapping widths before changing maximumNumberOfLines so the labels measure
+        // their intrinsic height at the correct width on the very first constraint pass.
+        // Without this, going 2→0 lines uses a stale (or zero) preferredMaxLayoutWidth and the
+        // subject text appears to fly in from off-screen before layout() corrects the width.
+        let textWidth = vStack.bounds.width
+        if textWidth > 0 {
+            subjectLabel.preferredMaxLayoutWidth = textWidth
+            bodyLabel.preferredMaxLayoutWidth = textWidth
+        }
+
         let subject = commit.subject.isEmpty ? "(no subject)" : commit.subject
         subjectLabel.stringValue = subject
         subjectLabel.maximumNumberOfLines = expanded ? 0 : 2
@@ -926,7 +969,7 @@ private final class TimelineCellView: NSTableCellView {
     private func subjectExceedsTwoLines(_ subject: String) -> Bool {
         let width = vStack.bounds.width
         guard width > 0 else { return subject.count > 80 }
-        return Self.textHeight(subject, font: Theme.Font.subject(), width: width)
+        return Self.textHeight(subject, font: Theme.Font.subject(), width: width, maxLines: 2)
             > ceil(Theme.Font.subject().boundingRectForFont.height * 2) + 2
     }
 
@@ -951,18 +994,29 @@ private final class TimelineCellView: NSTableCellView {
 
     // MARK: - Height measurement
 
-    /// Exact height for an expanded row, matching the live `vStack` layout above. Used by the
-    /// table's `heightOfRow` only for the (few) expanded rows.
-    static func expandedHeight(for commit: Commit, width tableWidth: CGFloat) -> CGFloat {
-        let textWidth = max(40, tableWidth - textLeading - trailing)
+    /// Static method to calculate row height for a commit at a given width.
+    /// This is used by the table view delegate to size rows before they're laid out.
+    static func rowHeight(for commit: Commit, expanded: Bool, width: CGFloat) -> CGFloat {
+        let textWidth = width - textLeading - trailing - 32  // -32 for card insets
+        guard textWidth > 0 else { return topInset + bottomInset + metaRowHeight }
+        
+        // Measure subject
         let subject = commit.subject.isEmpty ? "(no subject)" : commit.subject
-        let subjectH = textHeight(subject, font: Theme.Font.subject(), width: textWidth)
-        let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let bodyH = body.isEmpty ? 0 : textHeight(body, font: Theme.Font.secondary, width: textWidth)
-
-        var height = topInset + subjectH + vSpacing + metaRowHeight + bottomInset
-        if bodyH > 0 { height += bodyH + vSpacing }
-        return ceil(max(height, Theme.Metric.timelineRowHeight))
+        let subjectLines = expanded ? 0 : 2  // 0 = unlimited when expanded
+        let subjectHeight = textHeight(subject, font: Theme.Font.subject(), width: textWidth, maxLines: subjectLines)
+        
+        // Measure body if expanded
+        let bodyHeight: CGFloat
+        if expanded {
+            let body = commit.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            bodyHeight = body.isEmpty ? 0 : textHeight(body, font: Theme.Font.secondary, width: textWidth, maxLines: 0)
+        } else {
+            bodyHeight = 0
+        }
+        
+        // Meta row height is fixed at 18pt
+        let totalHeight = topInset + subjectHeight + (bodyHeight > 0 ? vSpacing + bodyHeight : 0) + vSpacing + metaRowHeight + bottomInset
+        return max(totalHeight, Theme.Metric.timelineRowHeight)
     }
 
     // Shared label used only for height probing — never displayed.
@@ -977,10 +1031,15 @@ private final class TimelineCellView: NSTableCellView {
         return f
     }()
 
-    private static func textHeight(_ string: String, font: NSFont, width: CGFloat) -> CGFloat {
+    private static func textHeight(_ string: String, font: NSFont, width: CGFloat, maxLines: Int = 0) -> CGFloat {
         guard !string.isEmpty, width > 0 else { return 0 }
         measureLabel.font = font
         measureLabel.stringValue = string
+        if maxLines > 0 {
+            measureLabel.maximumNumberOfLines = maxLines
+        } else {
+            measureLabel.maximumNumberOfLines = 0
+        }
         let bounds = NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)
         return ceil(measureLabel.cell?.cellSize(forBounds: bounds).height ?? 0)
     }
@@ -1106,6 +1165,100 @@ final class DirtyBannerView: NSView {
             stack.centerYAnchor.constraint(equalTo: centerYAnchor)
                 .id("DirtyBanner.stack.centerY"),
         ])
+    }
+}
+
+// MARK: - Issue item cell
+
+/// A timeline row that represents a git-bug issue (`refs/bugs/*`). Visually distinct from commits:
+/// a hollow diamond accent, status colour, title, and label chips.
+@objc(IssueItemCellView)
+private final class IssueItemCellView: NSTableCellView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let statusDot = NSView()
+    private let cardLayer = CALayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+
+        cardLayer.cornerRadius = 8
+        cardLayer.cornerCurve = .continuous
+        layer?.addSublayer(cardLayer)
+
+        statusDot.wantsLayer = true
+        statusDot.layer?.cornerRadius = 4
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        titleLabel.textColor = .labelColor
+        titleLabel.maximumNumberOfLines = 1
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        metaLabel.font = Theme.Font.secondary
+        metaLabel.textColor = .tertiaryLabelColor
+        metaLabel.maximumNumberOfLines = 1
+        metaLabel.lineBreakMode = .byTruncatingTail
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(statusDot)
+        addSubview(titleLabel)
+        addSubview(metaLabel)
+        NSLayoutConstraint.activate([
+            statusDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20)
+                .id("IssueCell.dot.leading"),
+            statusDot.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor)
+                .id("IssueCell.dot.centerY"),
+            statusDot.widthAnchor.constraint(equalToConstant: 8)
+                .id("IssueCell.dot.width"),
+            statusDot.heightAnchor.constraint(equalToConstant: 8)
+                .id("IssueCell.dot.height"),
+
+            titleLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 10)
+                .id("IssueCell.title.leading"),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
+                .id("IssueCell.title.trailing"),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 11)
+                .id("IssueCell.title.top"),
+
+            metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor)
+                .id("IssueCell.meta.leading"),
+            metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor)
+                .id("IssueCell.meta.trailing"),
+            metaLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4)
+                .id("IssueCell.meta.top"),
+        ])
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func configure(with issue: GitIssue) {
+        titleLabel.stringValue = issue.title
+        let statusText = issue.isOpen ? "Open" : "Closed"
+        let labelText = issue.labels.prefix(3).joined(separator: " · ")
+        let dateText = RelativeDate.short(issue.updatedAt)
+        metaLabel.stringValue = labelText.isEmpty
+            ? "\(statusText) · \(dateText)"
+            : "\(statusText) · \(labelText) · \(dateText)"
+        statusDot.layer?.backgroundColor = (issue.isOpen ? NSColor.systemGreen : NSColor.systemGray)
+            .withAlphaComponent(0.85).cgColor
+    }
+
+    override func layout() {
+        super.layout()
+        let inset: CGFloat = 4
+        cardLayer.frame = bounds.insetBy(dx: inset, dy: inset / 2)
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        // Match the card styling of commit rows but with a purple/indigo tint.
+        let fill = NSColor.systemIndigo.withAlphaComponent(0.06)
+        cardLayer.backgroundColor = fill.cgColor
+        cardLayer.borderColor = NSColor.systemIndigo.withAlphaComponent(0.18).cgColor
+        cardLayer.borderWidth = 0.5
     }
 }
 

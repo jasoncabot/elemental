@@ -78,13 +78,20 @@ public protocol GitBackend: Sendable {
     func diff(_ range: DiffRange, context: DiffContext, in repo: Repository) async throws -> [DiffFile]
     func workingCopyStatus(for repo: Repository) async throws -> WorkingCopyStatus
     func blob(at path: String, rev: String, in repo: Repository) async throws -> Data
-    /// The git note attached to a commit (`refs/notes/commits`), or nil if it has none.
+    /// The git note attached to a commit in the default ref (`refs/notes/commits`), or nil.
     func note(for sha: String, in repo: Repository) async throws -> String?
+    /// All `refs/notes/*` refs present in the repo. Empty when the repo has no notes at all.
+    func noteRefs(for repo: Repository) async throws -> [String]
+    /// The git note for a commit in a specific note ref, or nil if the commit has no note there.
+    func note(for sha: String, ref: String, in repo: Repository) async throws -> String?
     /// A commit message git has genuinely prepared for an in-progress operation — read from
     /// `MERGE_MSG`/`SQUASH_MSG` in the git dir (merge/squash/cherry-pick). `nil` when none exists.
     /// Read-only; never written. (`COMMIT_EDITMSG` is intentionally not used — it lingers after
     /// every commit and would surface a stale message.)
     func preparedCommitMessage(for repo: Repository) async throws -> String?
+    /// Line-level AI/human authorship for a commit from `refs/ai/authorship/<sha>` (git-ai format),
+    /// or nil if the repo has no authorship data or the commit isn't annotated.
+    func aiAuthorship(for sha: String, in repo: Repository) async throws -> AIAuthorshipRecord?
 }
 
 public extension GitBackend {
@@ -98,6 +105,14 @@ public extension GitBackend {
     func resolveCommit(_ rev: String, in repo: Repository) async throws -> String? { nil }
     /// Default for backends without note support (e.g. test fakes): no note.
     func note(for sha: String, in repo: Repository) async throws -> String? { nil }
+    /// Default: no note refs (e.g. test fakes).
+    func noteRefs(for repo: Repository) async throws -> [String] { [] }
+    /// Default: no issues (e.g. test fakes, repos without git-bug).
+    func loadIssues(in repo: Repository) async throws -> [GitIssue] { [] }
+    /// Default: delegates to the single-ref note method for the given ref (test fakes may skip).
+    func note(for sha: String, ref: String, in repo: Repository) async throws -> String? { nil }
     /// Default for backends without working-copy message support (e.g. test fakes): none.
     func preparedCommitMessage(for repo: Repository) async throws -> String? { nil }
+    /// Default: no authorship data (e.g. test fakes, repos without git-ai).
+    func aiAuthorship(for sha: String, in repo: Repository) async throws -> AIAuthorshipRecord? { nil }
 }

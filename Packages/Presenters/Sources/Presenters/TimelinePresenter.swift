@@ -23,12 +23,16 @@ public final class TimelinePresenter: Presenter {
     public private(set) var isDirty = false
     public private(set) var lastError: Error?
 
-    /// Number of rows the view should display. During a search this is the bounded result count;
-    /// otherwise it falls back to the contiguous loaded prefix while the authoritative count is
-    /// still being fetched, so the first page shows immediately.
+    /// Git-native issues from `refs/bugs/*` (git-bug), sorted newest-first by updatedAt.
+    /// Empty when the repo has no git-bug data. Loaded once on `start()`.
+    public private(set) var issues: [GitIssue] = []
+    private var issueLoadTask: Task<Void, Never>?
+
+    /// Number of rows the view should display. During a search this is the bounded result count
+    /// (commits only — issues are excluded from search). Otherwise: issues first, then commits.
     public var rowCount: Int {
         if let searchResults { return searchResults.count }
-        return totalCommitCount ?? contiguousLoadedCount
+        return issues.count + (totalCommitCount ?? contiguousLoadedCount)
     }
 
     private var query: CommitQuery
@@ -89,6 +93,17 @@ public final class TimelinePresenter: Presenter {
     public func start() {
         observeDiskChanges()
         reload(preservingSelection: false)
+        loadIssues()
+    }
+
+    private func loadIssues() {
+        issueLoadTask?.cancel()
+        issueLoadTask = Task { [weak self, backend, repo] in
+            let loaded = (try? await backend.loadIssues(in: repo)) ?? []
+            guard let self, !Task.isCancelled else { return }
+            self.issues = loaded.sorted { $0.updatedAt > $1.updatedAt }
+            self.notify()
+        }
     }
 
     public func setScope(_ scope: CommitQuery.Scope) {
@@ -226,6 +241,27 @@ public final class TimelinePresenter: Presenter {
 
     // MARK: - Sparse access (the view's data source)
 
+    /// The timeline item at an absolute row, or `nil` while its page loads.
+    ///
+    /// Layout: rows 0..<issues.count are issue items (newest-first); rows issues.count+ are
+    /// commits. During search, all rows are commits (issues are excluded from search results).
+    public func item(atRow row: Int) -> TimelineItem? {
+        if let searchResults {
+            return row < searchResults.count ? .commit(searchResults[row]) : nil
+        }
+        if row < issues.count { return .issue(issues[row]) }
+        return commit(atRow: row - issues.count).map { .commit($0) }
+    }
+
+    /// Like `item(atRow:)` but never schedules a page load. Safe to call during row-height passes.
+    public func residentItem(atRow row: Int) -> TimelineItem? {
+        if let searchResults {
+            return row < searchResults.count ? .commit(searchResults[row]) : nil
+        }
+        if row < issues.count { return .issue(issues[row]) }
+        return residentCommit(atRow: row - issues.count).map { .commit($0) }
+    }
+
     /// The commit at an absolute row, or `nil` if its page isn't resident yet. On a miss the
     /// surrounding page is scheduled and observers are notified when it arrives.
     public func commit(atRow row: Int) -> Commit? {
@@ -261,7 +297,7 @@ public final class TimelinePresenter: Presenter {
     /// Absolute row of a SHA, if it currently lives in a resident page (or the search results).
     public func row(forSHA sha: String) -> Int? {
         if let searchResults { return searchResults.firstIndex { $0.sha == sha } }
-        return rowBySHA[sha]
+        return rowBySHA[sha].map { $0 + issues.count }
     }
 
     /// Ensure the pages overlapping `range` are loaded. Used by custom views (the dot strip) that
@@ -447,6 +483,7 @@ public final class TimelinePresenter: Presenter {
         countTask?.cancel()
         watchTask?.cancel()
         searchTask?.cancel()
+        issueLoadTask?.cancel()
         pageTasks.values.forEach { $0.cancel() }
     }
 }
