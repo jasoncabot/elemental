@@ -60,3 +60,46 @@ final class BadgeLabel: NSView {
         layer?.borderColor = borderColor.cgColor
     }
 }
+
+/// A `BadgeLabel` that acts as a button — pointing-hand cursor, press dimming, and an accessible
+/// press action. Used for chips that open more detail (e.g. a commit note) without looking like
+/// a bordered push button in the middle of metadata.
+final class BadgeButton: NSView {
+    var onPress: ((BadgeButton) -> Void)?
+    private let badge: BadgeLabel
+    private let text: String
+
+    init(text: String, tint: NSColor, font: NSFont = Theme.Font.pill, filled: Bool = true) {
+        self.text = text
+        badge = BadgeLabel(text: text, tint: tint, font: font, filled: filled)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.topAnchor.constraint(equalTo: topAnchor).id("BadgeButton.badge.top"),
+            badge.bottomAnchor.constraint(equalTo: bottomAnchor).id("BadgeButton.badge.bottom"),
+            badge.leadingAnchor.constraint(equalTo: leadingAnchor).id("BadgeButton.badge.leading"),
+            badge.trailingAnchor.constraint(equalTo: trailingAnchor).id("BadgeButton.badge.trailing"),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    // The badge's label is an NSTextField that would otherwise swallow the click.
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    override func mouseDown(with event: NSEvent) { badge.alphaValue = 0.6 }
+
+    override func mouseUp(with event: NSEvent) {
+        badge.alphaValue = 1
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onPress?(self) }
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { text }
+    override func accessibilityPerformPress() -> Bool { onPress?(self); return true }
+}

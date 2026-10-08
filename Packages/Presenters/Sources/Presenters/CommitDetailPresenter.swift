@@ -16,12 +16,15 @@ public final class CommitDetailPresenter: Presenter {
         /// Content of the note — always `.loaded` for entries the presenter exposes
         /// (entries with no note are simply omitted from the array).
         public var text: String
+        /// The note parsed as a git-ai authorship log, or nil for an ordinary human-written note.
+        public var gitAI: GitAINote?
         public init(ref: String, text: String) {
             self.ref = ref
             self.name = ref.hasPrefix("refs/notes/")
                 ? String(ref.dropFirst("refs/notes/".count))
                 : ref
             self.text = text
+            self.gitAI = GitAINoteParser.parse(text)
         }
     }
 
