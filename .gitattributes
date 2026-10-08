@@ -1,0 +1,3 @@
+# Fixtures are byte-exact test inputs (CRLF, trailing whitespace, unicode); never normalise them.
+Packages/TestSupport/Sources/TestSupport/Fixtures/** -text
+Packages/Presenters/Tests/PresentersTests/Goldens/** -text

@@ -9,6 +9,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../GitData"),
+        .package(path: "../TestSupport"),
     ],
     targets: [
         .target(
@@ -18,7 +19,9 @@ let package = Package(
         ),
         .testTarget(
             name: "PresentersTests",
-            dependencies: ["Presenters", "GitData"],
+            dependencies: ["Presenters", "GitData", "TestSupport"],
+            // Golden snapshots are read and recorded in the checkout via #filePath.
+            exclude: ["Goldens"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

@@ -64,6 +64,7 @@ final class BadgeLabel: NSView {
 /// A `BadgeLabel` that acts as a button — pointing-hand cursor, press dimming, and an accessible
 /// press action. Used for chips that open more detail (e.g. a commit note) without looking like
 /// a bordered push button in the middle of metadata.
+@objc(BadgeButton)
 final class BadgeButton: NSView {
     var onPress: ((BadgeButton) -> Void)?
     private let badge: BadgeLabel

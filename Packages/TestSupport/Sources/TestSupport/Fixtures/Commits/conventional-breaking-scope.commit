@@ -1,0 +1,9 @@
+feat(api)!: drop the v1 endpoints
+
+The v1 surface has been deprecated since 2.0. Clients get a 410 with a
+pointer to the migration guide.
+
+BREAKING CHANGE: /v1/* now returns 410 Gone.
+Fixes: #812
+Reviewed-by: Alice Example <alice@example.com>
+Co-authored-by: Claude <noreply@anthropic.com>

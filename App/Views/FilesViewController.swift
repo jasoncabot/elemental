@@ -1363,90 +1363,36 @@ private final class CommitSummaryView: NSView, NSPopoverDelegate {
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
     }
 
+    /// The chip row is decided by `CommitHeaderPresentation` (golden-tested); this only renders it.
     private func rebuildChips(for commit: Commit, notes: [CommitDetailPresenter.NoteEntry],
                               aiAuthorship: AIAuthorshipRecord?) {
         clearStack(chipRow)
-
-        // Conventional commit type + scope + breaking flag.
-        if let conv = commit.conventional {
-            chipRow.addArrangedSubview(
-                BadgeLabel(text: conv.type, tint: Self.typeColor(conv.type),
-                           font: Theme.Font.pill, filled: true))
-            if let scope = conv.scope, !scope.isEmpty {
-                chipRow.addArrangedSubview(
-                    BadgeLabel(text: scope, tint: .systemGray, font: Theme.Font.pill, filled: false))
-            }
-            if conv.isBreaking {
-                chipRow.addArrangedSubview(
-                    BadgeLabel(text: "breaking", tint: .systemRed, font: Theme.Font.pill, filled: false))
-            }
-        }
-
-        // Key trailers: reviewers, co-authors, issue links.
-        for trailer in commit.trailers where Self.isDisplayTrailer(trailer.key) {
-            let text = Self.trailerChipText(trailer)
-            chipRow.addArrangedSubview(
-                BadgeLabel(text: text, tint: .systemGray, font: Theme.Font.pill, filled: false))
-        }
-
-        // Issue refs not already expressed by a trailer chip (avoids showing #123 twice when
-        // "Fixes: #123" is already shown as a trailer).
-        let trailerValues = commit.trailers.map(\.value)
-        for ref in commit.issueRefs
-            where !trailerValues.contains(where: { $0.contains(ref.raw) }) {
-            chipRow.addArrangedSubview(
-                BadgeLabel(text: ref.raw, tint: .systemBlue, font: Theme.Font.pill, filled: false))
-        }
-
-        // Notes: a git-ai authorship log reads as "✦ Claude Code"; anything else as a note pill.
-        // Either opens the full note in a popover.
-        for entry in notes {
-            let pill = BadgeButton(text: Self.notePillText(entry),
-                                   tint: entry.gitAI != nil ? .systemPurple : .systemYellow,
-                                   filled: entry.gitAI == nil)
-            pill.toolTip = entry.gitAI != nil ? "Show AI authorship (\(entry.ref))" : "Show note (\(entry.ref))"
-            pill.onPress = { [weak self] anchor in
-                self?.showNote(entry, sha: commit.sha, from: anchor)
-            }
-            chipRow.addArrangedSubview(pill)
-        }
-
-        // AI authorship chip from `refs/ai/authorship`: summarise which agents contributed lines.
-        // Skipped when a git-ai note already says the same thing as a clickable pill.
-        if let aiAuthorship, !notes.contains(where: { $0.gitAI != nil }) {
-            let totals = aiAuthorship.authorTotals
-            if !totals.isEmpty {
-                let agents = totals.sorted { $0.value > $1.value }
-                    .prefix(2).map(\.key).joined(separator: " · ")
-                let label = "✦ \(agents)"
-                chipRow.addArrangedSubview(
-                    BadgeLabel(text: label, tint: .systemPurple, font: Theme.Font.pill, filled: false))
+        for chip in CommitHeaderPresentation.chips(for: commit, notes: notes, aiAuthorship: aiAuthorship) {
+            switch chip.action {
+            case .none:
+                let badge = BadgeLabel(text: chip.text, tint: chip.swatch.color,
+                                       font: Theme.Font.pill, filled: chip.filled)
+                badge.toolTip = chip.tooltip
+                chipRow.addArrangedSubview(badge)
+            case .openNote(let index):
+                guard notes.indices.contains(index) else { continue }
+                let note = NotePresentation(note: notes[index], commitSHA: commit.sha)
+                let pill = BadgeButton(text: chip.text, tint: chip.swatch.color, filled: chip.filled)
+                pill.toolTip = chip.tooltip
+                pill.onPress = { [weak self] anchor in self?.showNote(note, from: anchor) }
+                chipRow.addArrangedSubview(pill)
             }
         }
-
         chipRow.isHidden = chipRow.arrangedSubviews.isEmpty
     }
 
-    private static func notePillText(_ entry: CommitDetailPresenter.NoteEntry) -> String {
-        if let ai = entry.gitAI {
-            let lines = ai.lineCounts
-            let agents = ai.contributors
-                .filter { $0.kind == .agent }
-                .sorted { (lines[$0.id] ?? 0) > (lines[$1.id] ?? 0) }
-            var names: [String] = []
-            for agent in agents where !names.contains(agent.displayName) { names.append(agent.displayName) }
-            return names.isEmpty ? "✦ git-ai" : "✦ " + names.prefix(2).joined(separator: " · ")
-        }
-        return entry.name == "commits" ? "Note" : "Note · \(entry.name)"
-    }
-
-    private func showNote(_ entry: CommitDetailPresenter.NoteEntry, sha: String, from anchor: NSView) {
+    private func showNote(_ note: NotePresentation, from anchor: NSView) {
         if let notePopover, notePopover.isShown, !notePopover.isDetached { notePopover.close() }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentViewController = NoteViewerController(note: entry, commitSHA: sha)
+        popover.contentViewController = NoteViewerController(presentation: note)
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
         notePopover = popover
     }
@@ -1454,34 +1400,6 @@ private final class CommitSummaryView: NSView, NSPopoverDelegate {
     /// Dragging the popover off tears it into a floating window, so a note can stay open beside
     /// the diff while reading.
     func popoverShouldDetach(_ popover: NSPopover) -> Bool { true }
-
-    private static func isDisplayTrailer(_ key: String) -> Bool {
-        switch key.lowercased() {
-        case "reviewed-by", "co-authored-by", "co-author",
-             "fixes", "closes", "resolves", "refs": return true
-        default: return false
-        }
-    }
-
-    private static func trailerChipText(_ trailer: CommitTrailer) -> String {
-        // Strip email from identity values: "Alice <alice@example.com>" → "Alice".
-        let valueDisplay = trailer.value.replacingOccurrences(
-            of: #"\s*<[^>]+>"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespaces)
-        return "\(trailer.key): \(valueDisplay)"
-    }
-
-    private static func typeColor(_ type: String) -> NSColor {
-        switch type {
-        case "feat": return .systemBlue
-        case "fix":  return .systemOrange
-        case "docs": return .systemTeal
-        case "test": return .systemGreen
-        case "perf": return .systemPurple
-        case "refactor": return .systemIndigo
-        default:     return .systemGray
-        }
-    }
 
     /// Deterministic color per author so the same person always gets the same dot —
     /// gives quick visual identity in long timelines without needing fetched avatars.

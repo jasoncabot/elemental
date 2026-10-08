@@ -1,0 +1,117 @@
+Packages/GitData/Sources/GitData/GitAINoteParser.swift
+  s_aaaaaaaaaaaaaa::t_00000000000001 1-40
+  h_bbbbbbbbbbbbbb 41-44
+  s_aaaaaaaaaaaaaa::t_00000000000002 120-180,45-60
+  s_cccccccccccccc::t_00000000000003 61-119
+"docs/design notes/AI \"authorship\" viewer.md"
+  s_cccccccccccccc::t_00000000000004 1-3,5,7-9,11,13-15,17,19-21
+"tabs\tand\\backslashes.txt"
+  h_bbbbbbbbbbbbbb 1
+App/Résumé/Ünïcødé 名前.swift
+  s_aaaaaaaaaaaaaa::t_00000000000005 2-4
+  0123456789abcdef 6-9
+assets/🚀 launch.json
+  s_dddddddddddddd::t_00000000000006 1-12
+vendor/generated/huge_table.c
+  s_aaaaaaaaaaaaaa::t_00000000000007 10000-12499
+  s_ffffffffffffff::t_00000000000008 12500-12510
+Sources/Feature01/Module01View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000001 1-10
+Sources/Feature02/Module02View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000002 2-20
+  h_bbbbbbbbbbbbbb 21-24
+Sources/Feature03/Module03View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000003 3-30
+  s_cccccccccccccc::t_20000000000003 35,37
+Sources/Feature04/Module04View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000004 4-40
+  h_bbbbbbbbbbbbbb 41-44
+Sources/Feature05/Module05View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000005 5-50
+Sources/Feature06/Module06View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000006 6-60
+  h_bbbbbbbbbbbbbb 61-64
+  s_cccccccccccccc::t_20000000000006 65,67
+Sources/Feature07/Module07View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000007 7-70
+Sources/Feature08/Module08View.swift
+  s_aaaaaaaaaaaaaa::t_10000000000008 8-80
+  h_bbbbbbbbbbbbbb 81-84
+empty/attestation/only.txt
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0-nightly+exp.sha.5114f85",
+  "base_commit_sha": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
+  "x_vendor_extension": {
+    "ignored": true,
+    "nested": [
+      1,
+      2,
+      {
+        "deep": null
+      }
+    ]
+  },
+  "prompts": {
+    "0123456789abcdef": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "copilot-legacy-77",
+        "model": "gpt-4o-2024-08-06"
+      },
+      "human_author": "Priya Raman <priya@example.org>",
+      "messages_url": "https://transcripts.example.invalid/c/77",
+      "total_additions": 31,
+      "total_deletions": 4,
+      "accepted_lines": 27,
+      "overriden_lines": 3
+    }
+  },
+  "humans": {
+    "h_bbbbbbbbbbbbbb": {
+      "author": "Zoë O'Connor-Δ <zoe@example.com>"
+    },
+    "h_99999999999999": {
+      "author": "Reviewer With No Lines <rev@example.com>"
+    }
+  },
+  "sessions": {
+    "s_aaaaaaaaaaaaaa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c3f6a8e-0d1b-4c5e-9b7a-2f4e6d8c0a1b",
+        "model": "claude-opus-4-1-20250805"
+      },
+      "human_author": "Zoë O'Connor-Δ <zoe@example.com>",
+      "custom_attributes": {
+        "ticket": "ELEM-1024",
+        "env": "ci",
+        "approver": "lead@example.com"
+      }
+    },
+    "s_cccccccccccccc": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "cur_44",
+        "model": "gpt-5-codex"
+      }
+    },
+    "s_dddddddddddddd": {
+      "agent_id": {
+        "tool": "aider",
+        "id": "aider-run-1",
+        "model": ""
+      },
+      "human_author": ""
+    },
+    "s_eeeeeeeeeeeeee": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "codex-unused",
+        "model": "o4-mini"
+      },
+      "human_author": "dev@example.com"
+    }
+  }
+}

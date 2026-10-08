@@ -1,0 +1,4 @@
+Fix crash when opening PROJ-42 links from #77
+
+Also covers the regression reported in ABC-9 and #77.
+Refs: PROJ-42

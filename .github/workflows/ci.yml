@@ -24,6 +24,18 @@ jobs:
           swift test --package-path Packages/GitData
 
       - name: Test Presenters package
+        if: ${{ !cancelled() }}
         run: |
           swift package --package-path Packages/Presenters clean
           swift test --package-path Packages/Presenters
+
+      - name: Build app
+        # Runs even if a test step failed, so one CI run reports both kinds of breakage.
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail && xcodebuild build \
+            -workspace Elemental.xcworkspace \
+            -scheme Elemental \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO | xcbeautify

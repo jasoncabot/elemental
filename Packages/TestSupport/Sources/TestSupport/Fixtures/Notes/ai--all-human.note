@@ -1,0 +1,8 @@
+README.md
+  h_31dce776f88375 1-12
+CHANGELOG.md
+  h_42424242424242 3
+---
+{"schema_version":"authorship/3.0.0","base_commit_sha":"3333333333333333333333333333333333333333","prompts":{},
+ "humans":{"h_31dce776f88375":{"author":"Developer <dev@example.com>"},
+           "h_42424242424242":{"author":"Release Bot <bot@example.com>"}}}

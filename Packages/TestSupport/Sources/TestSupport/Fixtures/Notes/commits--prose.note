@@ -1,0 +1,9 @@
+Reviewed in the Tuesday sync with the storage team.
+
+Context: this replaces the hand-rolled retry loop with the shared backoff helper. We agreed to keep the old flag for one release so the fleet can roll back without a config push.
+
+Follow-ups:
+- remove `legacyRetry` after 2.14 ships
+- add a metric for give-ups (ticket STOR-881)
+
+— Ana 🙂

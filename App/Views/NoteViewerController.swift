@@ -1,5 +1,4 @@
 import AppKit
-import GitData
 import Presenters
 
 /// Shows one git note in full, inside a popover anchored to the note's pill in the commit header.
@@ -9,9 +8,11 @@ import Presenters
 /// and trace hashes keyed to line ranges — so they open on a Summary that resolves every hash to
 /// the agent or person it names (who wrote how much, in which files and lines), with the untouched
 /// Raw text one click away for anyone who needs the identifiers.
+///
+/// Every string and colour role comes from `NotePresentation`, which golden tests pin; this class
+/// only lays it out.
 final class NoteViewerController: NSViewController {
-    let note: CommitDetailPresenter.NoteEntry
-    private let commitSHA: String
+    private let presentation: NotePresentation
 
     private let modeControl = NSSegmentedControl()
     private var summaryScroll: NSScrollView?
@@ -24,9 +25,8 @@ final class NoteViewerController: NSViewController {
     private static let maxBodyHeight: CGFloat = 460
     private static let inset: CGFloat = 16
 
-    init(note: CommitDetailPresenter.NoteEntry, commitSHA: String) {
-        self.note = note
-        self.commitSHA = commitSHA
+    init(presentation: NotePresentation) {
+        self.presentation = presentation
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -37,9 +37,9 @@ final class NoteViewerController: NSViewController {
         let container = NSView()
 
         // Header: title + "refs/notes/ai · 1a2b3c4", then Summary/Raw (git-ai only) and Copy.
-        let title = NSTextField(labelWithString: note.gitAI != nil ? "AI Authorship" : "Note")
+        let title = NSTextField(labelWithString: presentation.title)
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let caption = NSTextField(labelWithString: "\(note.ref) · \(commitSHA.prefix(7))")
+        let caption = NSTextField(labelWithString: presentation.caption)
         caption.font = .systemFont(ofSize: 11)
         caption.textColor = .secondaryLabelColor
         caption.lineBreakMode = .byTruncatingMiddle
@@ -60,7 +60,7 @@ final class NoteViewerController: NSViewController {
         copyButton.toolTip = "Copy note text"
 
         var headerViews: [NSView] = [titles, spacer]
-        if note.gitAI != nil {
+        if presentation.summary != nil {
             modeControl.segmentCount = 2
             modeControl.setLabel("Summary", forSegment: 0)
             modeControl.setLabel("Raw", forSegment: 1)
@@ -90,12 +90,12 @@ final class NoteViewerController: NSViewController {
         let raw = makeTextScroll()
         rawScroll = raw.scroll
         rawHeight = raw.height
-        var bodies: [NSScrollView] = [raw.scroll]
-        if let ai = note.gitAI {
-            let summary = makeSummaryScroll(ai)
-            summaryScroll = summary.scroll
-            summaryHeight = summary.height
-            bodies.append(summary.scroll)
+        var bodies: [(view: NSScrollView, name: String)] = [(raw.scroll, "raw")]
+        if let summary = presentation.summary {
+            let built = makeSummaryScroll(summary)
+            summaryScroll = built.scroll
+            summaryHeight = built.height
+            bodies.append((built.scroll, "summary"))
         }
 
         NSLayoutConstraint.activate([
@@ -107,13 +107,17 @@ final class NoteViewerController: NSViewController {
             divider.trailingAnchor.constraint(equalTo: container.trailingAnchor).id("NoteViewer.divider.trailing"),
         ])
         for body in bodies {
-            body.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(body)
+            body.view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(body.view)
             NSLayoutConstraint.activate([
-                body.topAnchor.constraint(equalTo: divider.bottomAnchor).id("NoteViewer.body.top"),
-                body.leadingAnchor.constraint(equalTo: container.leadingAnchor).id("NoteViewer.body.leading"),
-                body.trailingAnchor.constraint(equalTo: container.trailingAnchor).id("NoteViewer.body.trailing"),
-                body.bottomAnchor.constraint(equalTo: container.bottomAnchor).id("NoteViewer.body.bottom"),
+                body.view.topAnchor.constraint(equalTo: divider.bottomAnchor)
+                    .id("NoteViewer.\(body.name).top"),
+                body.view.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+                    .id("NoteViewer.\(body.name).leading"),
+                body.view.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+                    .id("NoteViewer.\(body.name).trailing"),
+                body.view.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+                    .id("NoteViewer.\(body.name).bottom"),
             ])
         }
 
@@ -136,7 +140,7 @@ final class NoteViewerController: NSViewController {
 
     @objc private func copyNote() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(note.text, forType: .string)
+        NSPasteboard.general.setString(presentation.rawText, forType: .string)
     }
 
     // MARK: - Raw / prose text
@@ -149,12 +153,12 @@ final class NoteViewerController: NSViewController {
         scroll.autohidesScrollers = true
 
         // git-ai logs keep their column structure in a monospaced face; prose gets reading leading.
-        let isMachine = note.gitAI != nil
+        let isMonospaced = presentation.rawStyle == .monospaced
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineHeightMultiple = isMachine ? 1.1 : 1.3
-        let text = NSAttributedString(string: note.text, attributes: [
-            .font: isMachine ? NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-                             : NSFont.systemFont(ofSize: 13),
+        paragraph.lineHeightMultiple = isMonospaced ? 1.1 : 1.3
+        let text = NSAttributedString(string: presentation.rawText, attributes: [
+            .font: isMonospaced ? NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                                : NSFont.systemFont(ofSize: 13),
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph,
         ])
@@ -179,58 +183,51 @@ final class NoteViewerController: NSViewController {
 
     // MARK: - git-ai summary
 
-    private func makeSummaryScroll(_ ai: GitAINote) -> (scroll: NSScrollView, height: CGFloat) {
+    private func makeSummaryScroll(_ summary: AuthorshipSummary) -> (scroll: NSScrollView, height: CGFloat) {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
 
+        var rowIndex = 0
         func add(_ view: NSView, spacingAfter: CGFloat? = nil) {
             stack.addArrangedSubview(view)
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor)
+                .id("NoteViewer.summaryRow\(rowIndex).width").isActive = true
+            rowIndex += 1
             if let spacingAfter { stack.setCustomSpacing(spacingAfter, after: view) }
         }
 
-        let lines = ai.lineCounts
-        let colors = Self.colors(for: ai)
-        let total = lines.values.reduce(0, +)
-
         // Overview: one sentence and a share bar, so the headline answer needs no reading.
-        let overview = NSTextField(wrappingLabelWithString: Self.overview(ai, lines: lines))
+        let overview = NSTextField(wrappingLabelWithString: summary.overview)
         overview.font = .systemFont(ofSize: 13)
         overview.textColor = .labelColor
         overview.preferredMaxLayoutWidth = Self.width - 2 * Self.inset
         add(overview, spacingAfter: 8)
 
-        if total > 0 {
-            let bar = ShareBar(segments: ai.contributors.compactMap { c -> (CGFloat, NSColor)? in
-                guard let n = lines[c.id], n > 0 else { return nil }
-                return (CGFloat(n) / CGFloat(total), colors[c.id] ?? .systemGray)
-            })
-            add(bar, spacingAfter: 16)
+        if !summary.shares.isEmpty {
+            add(ShareBar(segments: summary.shares.map { (CGFloat($0.fraction), $0.swatch.color) }),
+                spacingAfter: 16)
         }
 
         // Contributors: who they are in human terms. Hashes live only in the tooltip.
         add(Self.sectionCaption("Contributors"), spacingAfter: 6)
-        for c in ai.contributors {
-            add(Self.contributorBlock(c, lines: lines[c.id] ?? 0, color: colors[c.id] ?? .systemGray),
-                spacingAfter: 10)
+        for c in summary.contributors {
+            add(Self.contributorBlock(c), spacingAfter: 10)
         }
 
         // Files: per file, which contributor wrote which lines.
-        if !ai.files.isEmpty {
+        if !summary.files.isEmpty {
             if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(16, after: last) }
             add(Self.sectionCaption("Files"), spacingAfter: 6)
-            for file in ai.files {
+            for file in summary.files {
                 add(Self.countRow(dot: nil, title: file.path, titleFont: .systemFont(ofSize: 12, weight: .medium),
-                                  detail: nil, count: file.lineCount, truncation: .byTruncatingMiddle),
+                                  detail: nil, count: file.countText, truncation: .byTruncatingMiddle),
                     spacingAfter: 3)
                 for (i, a) in file.attributions.enumerated() {
-                    let name = ai.contributor(id: a.contributorID)?.displayName ?? a.contributorID
-                    let row = Self.countRow(dot: colors[a.contributorID] ?? .systemGray, title: name,
-                                            titleFont: .systemFont(ofSize: 12),
-                                            detail: Self.formatRanges(a.ranges), count: a.lineCount,
+                    let row = Self.countRow(dot: a.swatch.color, title: a.name, titleFont: .systemFont(ofSize: 12),
+                                            detail: a.rangesText, count: a.countText,
                                             truncation: .byTruncatingTail)
                     add(Self.indented(row, by: 12),
                         spacingAfter: i == file.attributions.count - 1 ? 10 : 3)
@@ -238,14 +235,10 @@ final class NoteViewerController: NSViewController {
             }
         }
 
-        var footer = ["Recorded by git-ai"]
-        if let v = ai.gitAIVersion { footer[0] += " \(v)" }
-        footer.append(ai.schemaVersion)
-        let footerLabel = Self.label(footer.joined(separator: " · "), font: .systemFont(ofSize: 11),
-                                     color: .tertiaryLabelColor)
-        if let base = ai.baseCommitSHA { footerLabel.toolTip = "Base commit \(base)" }
+        let footer = Self.label(summary.footer, font: .systemFont(ofSize: 11), color: .tertiaryLabelColor)
+        footer.toolTip = summary.footerTooltip
         if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(14, after: last) }
-        add(footerLabel)
+        add(footer)
 
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
@@ -277,84 +270,30 @@ final class NoteViewerController: NSViewController {
         return (scroll, ceil(stack.fittingSize.height) + 2 * vPad)
     }
 
-    private static func overview(_ ai: GitAINote, lines: [String: Int]) -> String {
-        let total = lines.values.reduce(0, +)
-        guard total > 0 else { return "No lines in this commit are attributed to anyone." }
-        let agents = ai.contributors.filter { $0.kind == .agent }
-        let agentLines = agents.reduce(0) { $0 + (lines[$1.id] ?? 0) }
-        let names = Set(agents.filter { (lines[$0.id] ?? 0) > 0 }.map(\.displayName))
-        let who = names.count == 1 ? names.first! : "AI agents"
-        let files = ai.files.count
-        let fileText = "\(files) file\(files == 1 ? "" : "s")"
-        if agentLines == 0 { return "All \(total) attributed lines across \(fileText) were written by people." }
-        if agentLines == total { return "\(who) wrote all \(total) attributed lines across \(fileText)." }
-        return "\(who) wrote \(agentLines) of \(total) attributed lines across \(fileText)."
-    }
-
-    /// Agents in cool, distinct hues; people in blues/greens; anything unresolved in gray.
-    private static func colors(for ai: GitAINote) -> [String: NSColor] {
-        let agentPalette: [NSColor] = [.systemPurple, .systemIndigo, .systemPink, .systemTeal, .systemOrange]
-        let humanPalette: [NSColor] = [.systemBlue, .systemGreen, .systemBrown]
-        var result: [String: NSColor] = [:]
-        var agents = 0, humans = 0
-        for c in ai.contributors {
-            switch c.kind {
-            case .agent:   result[c.id] = agentPalette[agents % agentPalette.count]; agents += 1
-            case .human:   result[c.id] = humanPalette[humans % humanPalette.count]; humans += 1
-            case .unknown: result[c.id] = .systemGray
-            }
-        }
-        return result
-    }
-
-    private static func contributorBlock(_ c: GitAINote.Contributor, lines: Int, color: NSColor) -> NSView {
-        var details: [String] = []
-        switch c.kind {
-        case .agent:
-            var parts: [String] = []
-            if let model = c.displayModel { parts.append(model) }
-            if let human = c.displayHuman { parts.append("directed by \(human)") }
-            if !parts.isEmpty { details.append(parts.joined(separator: " · ")) }
-            if let s = c.stats {
-                details.append("+\(s.additions) −\(s.deletions) · \(s.acceptedLines) accepted"
-                               + (s.overriddenLines > 0 ? " · \(s.overriddenLines) edited by a human" : ""))
-            }
-            if !c.customAttributes.isEmpty {
-                details.append(c.customAttributes.sorted { $0.key < $1.key }
-                    .map { "\($0.key): \($0.value)" }.joined(separator: " · "))
-            }
-        case .human:
-            details.append(c.human ?? "Person")
-        case .unknown:
-            details.append("Not described in the note's metadata")
-        }
-
+    private static func contributorBlock(_ c: AuthorshipSummary.Contributor) -> NSView {
         let block = NSStackView()
         block.orientation = .vertical
         block.alignment = .leading
         block.spacing = 2
-        let head = countRow(dot: color, title: c.displayName, titleFont: .systemFont(ofSize: 13, weight: .semibold),
-                            detail: nil, count: lines, truncation: .byTruncatingTail)
+        let head = countRow(dot: c.swatch.color, title: c.name, titleFont: .systemFont(ofSize: 13, weight: .semibold),
+                            detail: nil, count: c.countText, truncation: .byTruncatingTail)
         block.addArrangedSubview(head)
-        head.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
-        for d in details {
+        head.widthAnchor.constraint(equalTo: block.widthAnchor).id("NoteViewer.contributor.head.width").isActive = true
+        for (i, d) in c.details.enumerated() {
             let l = label(d, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
             l.toolTip = d
             let row = indented(l, by: 16)
             block.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: block.widthAnchor).isActive = true
+            row.widthAnchor.constraint(equalTo: block.widthAnchor)
+                .id("NoteViewer.contributor.detail\(i).width").isActive = true
         }
-
-        var tip = [c.kind == .human ? "Human \(c.id)" : "Session \(c.id)"]
-        if let sid = c.sessionID { tip.append("Tool session \(sid)") }
-        if let url = c.messagesURL { tip.append("Transcript \(url)") }
-        block.toolTip = tip.joined(separator: "\n")
+        block.toolTip = c.tooltip
         return block
     }
 
     /// `●  Title   detail ………………   42 lines` — a single line whose count stays right-aligned.
     private static func countRow(dot: NSColor?, title: String, titleFont: NSFont, detail: String?,
-                                 count: Int, truncation: NSLineBreakMode) -> NSView {
+                                 count: String, truncation: NSLineBreakMode) -> NSView {
         var views: [NSView] = []
         if let dot { views.append(DotView(color: dot)) }
         let titleLabel = label(title, font: titleFont, color: .labelColor)
@@ -371,17 +310,15 @@ final class NoteViewerController: NSViewController {
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
         views.append(spacer)
-        let countLabel = label("\(count) line\(count == 1 ? "" : "s")",
-                               font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+        let countLabel = label(count, font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular),
                                color: .secondaryLabelColor)
         countLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         views.append(countLabel)
 
         let row = NSStackView(views: views)
         row.orientation = .horizontal
-        row.alignment = .firstBaseline
+        row.alignment = dot != nil ? .centerY : .firstBaseline
         row.spacing = 8
-        if dot != nil { row.alignment = .centerY }
         return row
     }
 
@@ -391,10 +328,11 @@ final class NoteViewerController: NSViewController {
         view.translatesAutoresizingMaskIntoConstraints = false
         wrapper.addSubview(view)
         NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: wrapper.topAnchor),
-            view.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: amount),
-            view.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            view.topAnchor.constraint(equalTo: wrapper.topAnchor).id("NoteViewer.indented.top"),
+            view.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor).id("NoteViewer.indented.bottom"),
+            view.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: amount)
+                .id("NoteViewer.indented.leading"),
+            view.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor).id("NoteViewer.indented.trailing"),
         ])
         return wrapper
     }
@@ -418,21 +356,17 @@ final class NoteViewerController: NSViewController {
         l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return l
     }
-
-    /// `[1...10, 15...15]` → `1–10, 15`.
-    static func formatRanges(_ ranges: [ClosedRange<Int>]) -> String {
-        ranges.map { $0.count == 1 ? "\($0.lowerBound)" : "\($0.lowerBound)–\($0.upperBound)" }
-            .joined(separator: ", ")
-    }
 }
 
 // MARK: - Small drawing views
 
+@objc(NoteViewerFlippedView)
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
 /// A filled circle in a dynamic system color (drawn, so it follows light/dark changes).
+@objc(NoteViewerDotView)
 private final class DotView: NSView {
     private let color: NSColor
     init(color: NSColor) {
@@ -453,6 +387,7 @@ private final class DotView: NSView {
 }
 
 /// A thin rounded bar split into proportional colored segments — the share of attributed lines.
+@objc(NoteViewerShareBar)
 private final class ShareBar: NSView {
     private let segments: [(fraction: CGFloat, color: NSColor)]
     init(segments: [(CGFloat, NSColor)]) {
