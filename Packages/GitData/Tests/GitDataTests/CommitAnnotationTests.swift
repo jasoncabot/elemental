@@ -87,6 +87,19 @@ final class TrailerParserTests: XCTestCase {
         XCTAssertEqual(trailers.count, 1)
         XCTAssertEqual(trailers[0].key, "Signed-off-by")
     }
+
+    func testBreakingChangeFooterDoesNotHideOtherTrailers() {
+        let body = """
+        Drop v1.
+
+        BREAKING CHANGE: /v1/* now returns 410 Gone.
+        Fixes: #812
+        Reviewed-by: Alice <alice@example.com>
+        """
+        let trailers = TrailerParser.parse(body)
+        XCTAssertEqual(trailers.map(\.key), ["BREAKING CHANGE", "Fixes", "Reviewed-by"])
+        XCTAssertEqual(TrailerParser.bodyWithoutTrailers(body), "Drop v1.")
+    }
 }
 
 final class ConventionalCommitParserTests: XCTestCase {

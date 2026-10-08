@@ -17,6 +17,13 @@ Each layer imports only the one to its left. Views never import `GitData` direct
 
 When adding a new data concept (a new git ref type, a new parsed field) it starts in `GitData/Models.swift` and `GitData/Parsing.swift`, gets exposed through `GitBackend`, forwarded through `GitService`, and surfaced via a presenter property — not accessed directly from a view.
 
+## Presentation models
+
+When what a view shows can be decided without observation (header chips, the note viewer), compute
+it in Presenters as a pure value type: strings, ordering, a `Swatch` colour role, and actions. The
+view only renders it. That keeps views free of `GitData` and lets golden tests pin the output
+([golden-fixtures.md](golden-fixtures.md)).
+
 ## AppKit layout
 
 **Schedule layout with `needsLayout = true`; never call `layoutSubtreeIfNeeded()` except inside `NSAnimationContext` blocks.**

@@ -1,0 +1,5 @@
+chips:
+  [type:feat filled] feat
+  [neutral] api
+  [danger] breaking
+  [issue] #812

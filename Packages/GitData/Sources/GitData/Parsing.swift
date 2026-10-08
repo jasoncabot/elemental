@@ -217,9 +217,11 @@ enum StatusParser {
 /// the prose body by a blank line (git's own convention, per `git-interpret-trailers(1)`).
 /// The last paragraph is a trailer block when every non-empty line matches the token pattern.
 enum TrailerParser {
-    // RFC 5322-style token: letter followed by letters, digits, or hyphens.
+    // RFC 5322-style token: letter followed by letters, digits, or hyphens — plus the
+    // Conventional Commits `BREAKING CHANGE` footer, the one token allowed to contain a space.
+    // Without it a single breaking-change footer hid every other trailer in the block.
     private static let trailerLine = try! NSRegularExpression(
-        pattern: #"^([A-Za-z][A-Za-z0-9-]*):\s+(.+)$"#, options: [])
+        pattern: #"^(BREAKING CHANGE|[A-Za-z][A-Za-z0-9-]*):\s+(.+)$"#, options: [])
 
     static func parse(_ body: String) -> [CommitTrailer] {
         guard let block = trailerBlock(in: body) else { return [] }

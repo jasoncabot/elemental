@@ -28,8 +28,9 @@ public struct NotePresentation: Hashable, Sendable {
         if let ai = note.gitAI {
             let summary = AuthorshipSummary(ai)
             title = "AI Authorship"
+            // The sparkle means "an agent wrote lines here"; an all-human log doesn't get one.
             pillText = summary.agentNames.isEmpty
-                ? "✦ git-ai"
+                ? "git-ai"
                 : "✦ " + summary.agentNames.prefix(2).joined(separator: " · ")
             pillTooltip = "Show AI authorship (\(note.ref))"
             rawStyle = .monospaced
@@ -38,9 +39,19 @@ public struct NotePresentation: Hashable, Sendable {
             title = "Note"
             pillText = note.name == "commits" ? "Note" : "Note · \(note.name)"
             pillTooltip = "Show note (\(note.ref))"
-            rawStyle = .prose
+            rawStyle = Self.looksMachineWritten(note) ? .monospaced : .prose
             summary = nil
         }
+    }
+}
+
+extension NotePresentation {
+    /// JSON (git-appraise reviews, a git-ai log too broken to parse) keeps its structure in a
+    /// monospaced face; anything else is prose.
+    static func looksMachineWritten(_ note: CommitDetailPresenter.NoteEntry) -> Bool {
+        if note.name == "ai" { return true }
+        let first = note.text.first { !$0.isWhitespace }
+        return first == "{" || first == "["
     }
 }
 
@@ -77,13 +88,13 @@ public struct AuthorshipSummary: Hashable, Sendable {
     }
 
     public var overview: String
-    /// Proportional share of attributed lines, in contributor order; empty when nothing is attributed.
+    /// Proportional share of attributed lines, in `contributors` order; empty when nothing is attributed.
     public var shares: [Share]
     public var contributors: [Contributor]
     public var files: [File]
     public var footer: String
     public var footerTooltip: String?
-    /// Distinct agent names, most lines first — used for the header pill.
+    /// Distinct names of agents that wrote at least one line, most lines first — the header pill.
     public var agentNames: [String]
 
     public init(_ ai: GitAINote) {
@@ -93,12 +104,19 @@ public struct AuthorshipSummary: Hashable, Sendable {
 
         overview = Self.overview(ai, lines: lines, total: total)
 
-        shares = total == 0 ? [] : ai.contributors.compactMap { c -> Share? in
+        // Most lines first (ties keep note order), so the list leads with who wrote the most.
+        // Swatches were assigned in note order above, so colours don't shift with the sort.
+        let ranked = ai.contributors.enumerated().sorted { a, b in
+            let la = lines[a.element.id] ?? 0, lb = lines[b.element.id] ?? 0
+            return la != lb ? la > lb : a.offset < b.offset
+        }.map { $0.element }
+
+        shares = total == 0 ? [] : ranked.compactMap { c -> Share? in
             guard let n = lines[c.id], n > 0 else { return nil }
             return Share(fraction: Double(n) / Double(total), swatch: swatches[c.id] ?? .unknown)
         }
 
-        contributors = ai.contributors.map { c in
+        contributors = ranked.map { c in
             let n = lines[c.id] ?? 0
             return Contributor(name: c.displayName, swatch: swatches[c.id] ?? .unknown, lineCount: n,
                                countText: Self.linesText(n), details: Self.details(for: c),
@@ -121,13 +139,9 @@ public struct AuthorshipSummary: Hashable, Sendable {
         footerTooltip = ai.baseCommitSHA.map { "Base commit \($0)" }
 
         var names: [String] = []
-        let agents = ai.contributors.enumerated()
-            .filter { $0.element.kind == .agent }
-            .sorted { a, b in
-                let la = lines[a.element.id] ?? 0, lb = lines[b.element.id] ?? 0
-                return la != lb ? la > lb : a.offset < b.offset
-            }
-        for (_, agent) in agents where !names.contains(agent.displayName) { names.append(agent.displayName) }
+        for c in ranked where c.kind == .agent && (lines[c.id] ?? 0) > 0 && !names.contains(c.displayName) {
+            names.append(c.displayName)
+        }
         agentNames = names
     }
 
@@ -184,7 +198,13 @@ public struct AuthorshipSummary: Hashable, Sendable {
             }
             return details
         case .human:
-            return [c.human ?? "Person"]
+            // The name is already the row title; the detail is just how to reach them.
+            guard let identity = c.human, !identity.isEmpty else { return [] }
+            if let lt = identity.firstIndex(of: "<"), let gt = identity.lastIndex(of: ">"), lt < gt {
+                let email = identity[identity.index(after: lt)..<gt].trimmingCharacters(in: .whitespaces)
+                return email.isEmpty ? [] : [email]
+            }
+            return identity == c.displayName ? [] : [identity]
         case .unknown:
             return ["Not described in the note's metadata"]
         }

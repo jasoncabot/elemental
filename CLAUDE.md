@@ -13,6 +13,8 @@ Local, offline, read-only macOS git client for reading and comprehending changes
 
 Package rules, AppKit layout philosophy, and extension checklists: [architecture.md](docs/architecture.md)
 
+Golden fixtures (UI stability tests, how to re-record): [golden-fixtures.md](docs/golden-fixtures.md)
+
 Roadmap: [next.md](docs/next.md)
 
 ## Non-negotiables

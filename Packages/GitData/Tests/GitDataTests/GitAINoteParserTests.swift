@@ -124,6 +124,16 @@ final class GitAINoteParserTests: XCTestCase {
         XCTAssertNil(GitAINoteParser.parse("x\n---\n{\"schema_version\":\"other/1.0\"}"))
     }
 
+    func testDisplayModelDropsDateStamps() {
+        func model(_ m: String) -> String? {
+            GitAINote.Contributor(id: "s", kind: .agent, model: m).displayModel
+        }
+        XCTAssertEqual(model("claude-sonnet-4-5-20250514"), "claude-sonnet-4-5")
+        XCTAssertEqual(model("gpt-4o-2024-08-06"), "gpt-4o")
+        XCTAssertEqual(model("o3"), "o3")
+        XCTAssertNil(model(""))
+    }
+
     func testParseRangesSkipsMalformedParts() {
         XCTAssertEqual(GitAINoteParser.parseRanges("1-3,5,x,9-7,0,12-12"), [1...3, 5...5, 12...12])
     }

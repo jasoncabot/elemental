@@ -25,6 +25,20 @@ diffs**. The two pieces that must be excellent (and are why we chose AppKit over
    **working-copy view** (bound to `WorkingCopyPresenter`) shows staged/unstaged file lists with their
    diffs.
 
+## Commit summary header and notes
+
+The files column opens with the commit summary: subject, identity strip, body (up to 3 lines,
+collapsible with the chevron; the collapsed state lasts for the whole session), and a chip row. The header is
+re-applied only when its `DetailHeader` changes, so selecting a file never re-measures it.
+
+Git notes are **not** shown inline: a long or machine-written note would push the file list down.
+Each note is a pill in the chip row (`BadgeButton`). Clicking it opens `NoteViewerController` in a
+transient `NSPopover`. Dragging the popover away detaches it into a floating window that can stay
+beside the diff. Human notes read as selectable prose. git-ai logs open on a **Summary**
+(overview, share bar, contributors, files and line ranges) with a **Summary | Raw** switch and a copy
+button. The viewer only lays out `NotePresentation`. Strings and colour roles come from Presenters
+and are golden-tested.
+
 ## Commit-graph cell
 
 - A **custom `NSView`** used as the graph column's cell. Computes nothing itself — it draws a
@@ -66,4 +80,6 @@ diffs**. The two pieces that must be excellent (and are why we chose AppKit over
   renders without freeze; selection/copy works.
 - Snapshot/layout tests for the graph cell against known parent topologies (straight line, branch,
   merge, octopus).
+- Commit header chips and the note viewer: golden snapshots of their presentation models
+  ([golden-fixtures.md](golden-fixtures.md)); CI also builds the app target so view code compiles.
 - Dirty banner appears on `isDirty` and Refresh button routes correctly (with a fake presenter).

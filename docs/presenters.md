@@ -35,6 +35,23 @@ callback only.)
   so cache entries never go stale).
 - **`WorkingCopyPresenter`** — `workingCopyStatus` + per-file diffs (`.workingStaged`/`.workingUnstaged`).
 
+## Presentation models (pure, golden-tested)
+
+Some UI is decided entirely by value types with no observation, so it can be snapshot-tested.
+The App renders them as given.
+
+- **`CommitHeaderPresentation.chips(for:notes:aiAuthorship:)` → `[HeaderChip]`**: the commit
+  header's chip row: Conventional Commits type, scope and breaking flag, display trailers, issue
+  refs, one clickable pill per git note (`.openNote(index)`), and the `refs/ai/authorship` chip,
+  which is skipped when a git-ai note already covers it. Ties sort by name, so the order is stable.
+- **`NotePresentation(note:commitSHA:)`**: one note's pill text and tooltip, viewer title and
+  caption, raw text and style (`prose` / `monospaced`), and, for git-ai logs, an
+  **`AuthorshipSummary`**: overview sentence, share bar, contributors (name, model, "directed by",
+  stats, custom attributes; IDs only in tooltips), files with ranges written `1–10, 15`, and footer.
+- **`Swatch`**: colour roles (`commitType`, `neutral`, `danger`, `issue`, `ai`, `note`,
+  `agent(n)`, `human(n)`, `unknown`). The App maps them to system colours in `Swatch+Color.swift`.
+- `CommitDetailPresenter.NoteEntry` carries `gitAI: GitAINote?`, parsed once when the note loads.
+
 ## Disk-change resilience (the headline logic lives here)
 
 Each repo-scoped presenter subscribes to `RepoWatcher.events(for:)`. On a `DirtyEvent`:
@@ -70,3 +87,5 @@ mapping, which Refresh reconciles deliberately.
   - on `DirtyEvent`, `isDirty` flips and no reload happens until Refresh;
   - Refresh with surviving SHA preserves selection; Refresh with removed SHA falls back without error;
   - per-SHA diff cache is reused (no second backend call for the same SHA).
+- **Golden snapshots** of the presentation models for every checked-in fixture
+  (`GoldenFixtureTests`). See [golden-fixtures.md](golden-fixtures.md).

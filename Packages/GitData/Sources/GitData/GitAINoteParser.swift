@@ -88,10 +88,12 @@ public extension GitAINote.Contributor {
         }
     }
 
-    /// The model without a trailing release-date stamp: `claude-sonnet-4-5-20250514` → `claude-sonnet-4-5`.
+    /// The model without a trailing release-date stamp: `claude-sonnet-4-5-20250514` →
+    /// `claude-sonnet-4-5`, `gpt-4o-2024-08-06` → `gpt-4o`.
     var displayModel: String? {
         guard let model, !model.isEmpty else { return nil }
-        let trimmed = model.replacingOccurrences(of: #"-\d{8}$"#, with: "", options: .regularExpression)
+        let trimmed = model.replacingOccurrences(of: #"-\d{4}-?\d{2}-?\d{2}$"#, with: "",
+                                                 options: .regularExpression)
         return trimmed.isEmpty ? model : trimmed
     }
 

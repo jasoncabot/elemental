@@ -27,6 +27,12 @@ here.
 - `DiffLine { kind (context/added/removed), oldLineNo?, newLineNo?, text }`
 - `WorkingCopyStatus { branch?, ahead?, behind?, staged: [FileStatus], unstaged: [FileStatus],
   untracked: [FileStatus], conflicts: [FileStatus] }`
+- `GitAINote { schemaVersion, gitAIVersion?, baseCommitSHA?, contributors: [Contributor],
+  files: [File] }`: a git-ai authorship log (git-ai standard v3) resolved from hashes into people.
+  `Contributor { id, kind (agent/human/unknown), tool?, model?, sessionID?, human?, stats?,
+  messagesURL?, customAttributes }` with `displayName`/`displayModel`/`displayHuman`;
+  `File { path, attributions: [Attribution { contributorID, ranges }] }`.
+- `AIAuthorshipRecord`: line-level authorship from `refs/ai/authorship/<sha>` blobs.
 
 ### `GitBackend` protocol (async, cancellable)
 ```
@@ -58,6 +64,13 @@ protocol RepoWatcher { func events(for repo: Repository) -> AsyncStream<DirtyEve
 - **`GitService` actor** — wraps `CLIGitBackend`; serializes/coalesces per-repo requests, owns process
   lifecycle, maps Swift `Task` cancellation → child process termination, streams large stdout via
   `Pipe`/`FileHandle.bytes` and parses incrementally (never buffer a 100k-commit log in one String).
+- **Commit annotations**: `note(for:ref:in:)` and `noteRefs(for:)` read git notes from any
+  `refs/notes/*` ref (output trimmed, otherwise verbatim). `GitAINoteParser.parse(_:)` turns a note's
+  text into a `GitAINote` when it is a git-ai log (an attestation block, a `---` line, then JSON with
+  `schema_version: "authorship/…"`) and returns nil for anything else, so callers try it on every
+  note. It accepts unsorted ranges, quoted and escaped paths, CRLF, legacy `prompts`, and keys
+  missing from the metadata. `GitAIAuthorshipReader` and `GitBugReader` read `refs/ai/authorship/*`
+  and `refs/bugs/*`.
 - **`GitProcess`** — small helper around `Process`: argv, cwd, env, async stdout/stderr, exit handling,
   cancellation.
 
@@ -74,6 +87,8 @@ protocol RepoWatcher { func events(for repo: Repository) -> AsyncStream<DirtyEve
 | staged | `git diff --cached --patch --numstat -z -M -C` |
 | status | `git status --porcelain=v2 -z --branch` |
 | blob | `git cat-file --batch` / `--batch-check` |
+| note refs | `git for-each-ref --format=%(refname) refs/notes/` |
+| note | `git notes --ref=<ref> show <sha>` |
 
 ## Worktrees & submodules
 
@@ -93,5 +108,8 @@ Resolve `.git` gitlinks via `--git-dir` / `--git-common-dir`. The `RepoWatcher` 
 - Include a **bare repo**, a **worktree**, and a **submodule** fixture.
 - Cancellation test: start a large `loadCommits` stream, cancel the task, assert the child process
   terminates.
+- Shared text fixtures (`TestSupport/Fixtures`) round-trip through real git: every note fixture is
+  stored with `git notes add -C <blob>` and read back unchanged. See
+  [golden-fixtures.md](golden-fixtures.md).
 - Robustness: mutate a fixture repo on disk (extra commit, `git gc`) between calls; assert no throw on
   reads of still-present SHAs.
