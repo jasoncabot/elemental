@@ -83,8 +83,9 @@ struct DetailSection {
     var files: [FileAnalysis]
 }
 
-/// The model for the files-pane summary header.
-enum DetailHeader {
+/// The model for the files-pane summary header. Equatable so the view can skip reconfiguring
+/// (and re-measuring) when an unrelated presenter update — e.g. a file selection — leaves it unchanged.
+enum DetailHeader: Equatable {
     case none
     case commit(Commit?, notes: [CommitDetailPresenter.NoteEntry], aiAuthorship: AIAuthorshipRecord?)
     case workingCopy(branch: String?, staged: Int, unstaged: Int, untracked: Int, prepared: String?)

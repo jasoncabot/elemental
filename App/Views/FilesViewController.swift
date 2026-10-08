@@ -17,9 +17,15 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
     var source: (any DetailSource)? {
         didSet {
-            oldValue?.removeObserver(self)
-            source?.addObserver(self)
-            collapsedKeys.removeAll()
+            if oldValue !== source {
+                oldValue?.removeObserver(self)
+                source?.addObserver(self)
+            }
+            // Collapse state survives commit ↔ working-copy hops and commit-to-commit clicks
+            // (keys are area-prefixed, so the two never collide); only a different repo resets it.
+            if oldValue?.repoRootURL != source?.repoRootURL {
+                collapsedKeys.removeAll()
+            }
             rebuild()
         }
     }
@@ -27,7 +33,6 @@ final class FilesViewController: NSViewController, PresenterObserving {
     var reviewMode: ReviewMode = .narrative {
         didSet {
             guard reviewMode != oldValue else { return }
-            collapsedKeys.removeAll()
             rebuild()
         }
     }
@@ -61,8 +66,8 @@ final class FilesViewController: NSViewController, PresenterObserving {
 
     private var sections: [DetailSection] = []
     private var isUpdatingSelection = false
-    /// Keys of items the user has manually collapsed. Persists across rebuilds so that
-    /// changing the selected diff file doesn't reset expand/collapse state.
+    /// Keys of items the user has manually collapsed. Persists across rebuilds, review-mode
+    /// switches and source changes within a repo, so tapping around never resets it.
     private var collapsedKeys: Set<String> = []
 
     // MARK: - Lifecycle
@@ -953,8 +958,12 @@ private final class CommitSummaryView: NSView {
     private let notesStack = NSStackView()
     /// Small disclosure chevron in the identity row. Toggling shows/hides body + notes.
     private let collapseButton = NSButton()
-    /// Whether the body + notes are hidden so the file list gets more room. Persists for the session.
+    /// Whether the body + notes are hidden so the file list gets more room. Persists for the
+    /// session — across file selections and commit changes — so the file list never jumps.
     private(set) var isCollapsed = false
+    /// The header last applied. The parent rebuilds on every presenter update (including a plain
+    /// file selection), so identical headers are skipped rather than torn down and re-measured.
+    private var configuredHeader: DetailHeader?
     /// Called when the collapse state changes so the parent can re-measure the header height.
     var onCollapseToggle: (() -> Void)?
 
@@ -1240,6 +1249,8 @@ private final class CommitSummaryView: NSView {
     }
 
     func configure(header: DetailHeader) {
+        guard header != configuredHeader else { return }
+        configuredHeader = header
         switch header {
         case .none:
             subjectLabel.isHidden = true
@@ -1260,6 +1271,8 @@ private final class CommitSummaryView: NSView {
     private func configureWorkingCopy(branch: String?, staged: Int, unstaged: Int,
                                       untracked: Int, prepared: String?) {
         subjectLabel.isHidden = false
+        // Collapse doesn't apply to the working copy (no chevron), so ignore `isCollapsed` here.
+        subjectLabel.maximumNumberOfLines = 3
         subjectLabel.attributedStringValue = Self.styled(
             "Uncommitted Changes", font: Self.subjectFont,
             color: .labelColor, lineHeightMultiple: Self.subjectLineMultiple)
@@ -1298,8 +1311,8 @@ private final class CommitSummaryView: NSView {
     private func configureCommit(_ commit: Commit?,
                                   notes: [CommitDetailPresenter.NoteEntry],
                                   aiAuthorship: AIAuthorshipRecord?) {
-        isCollapsed = false
-        updateCollapseButton()
+        // Deliberately keep `isCollapsed` as the user left it — resetting it here re-expanded the
+        // header on every file click and shoved the clicked row down the list.
         guard let commit else {
             subjectLabel.isHidden = true
             identityRow.isHidden = true
