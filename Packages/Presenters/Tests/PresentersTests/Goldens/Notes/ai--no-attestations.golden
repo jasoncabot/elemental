@@ -1,0 +1,17 @@
+title: AI Authorship
+caption: refs/notes/ai · 0123456
+pill: git-ai
+pill tooltip: Show AI authorship (refs/notes/ai)
+raw style: monospaced
+raw: 3 lines, 253 scalars, CR 0
+summary:
+  overview: No lines in this commit are attributed to anyone.
+  shares: none
+  agents: none
+  contributors:
+    [agent0] Claude Code — 0 lines
+      claude-haiku-4-5 · directed by dev@example.com
+      tooltip: Session s_56565656565656 | Tool session empty
+  files: none
+  footer: Recorded by git-ai · authorship/3.0.0
+  footer tooltip: Base commit 4444444444444444444444444444444444444444

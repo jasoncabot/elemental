@@ -10,6 +10,8 @@ let package = Package(
     targets: [
         .target(
             name: "TestSupport",
+            // Read from the checkout via #filePath (see TextFixtures), not bundled as resources.
+            exclude: ["Fixtures"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

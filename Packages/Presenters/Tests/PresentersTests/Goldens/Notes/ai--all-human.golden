@@ -1,0 +1,24 @@
+title: AI Authorship
+caption: refs/notes/ai · 0123456
+pill: git-ai
+pill tooltip: Show AI authorship (refs/notes/ai)
+raw style: monospaced
+raw: 8 lines, 330 scalars, CR 0
+summary:
+  overview: All 13 attributed lines across 2 files were written by people.
+  shares: human0 92.3% · human1 7.7%
+  agents: none
+  contributors:
+    [human0] Developer — 12 lines
+      dev@example.com
+      tooltip: Human h_31dce776f88375
+    [human1] Release Bot — 1 line
+      bot@example.com
+      tooltip: Human h_42424242424242
+  files:
+    README.md — 12 lines
+      [human0] Developer · 1–12 · 12 lines
+    CHANGELOG.md — 1 line
+      [human1] Release Bot · 3 · 1 line
+  footer: Recorded by git-ai · authorship/3.0.0
+  footer tooltip: Base commit 3333333333333333333333333333333333333333

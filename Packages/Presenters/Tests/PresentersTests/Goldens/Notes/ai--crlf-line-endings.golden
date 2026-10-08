@@ -1,0 +1,19 @@
+title: AI Authorship
+caption: refs/notes/ai · 0123456
+pill: ✦ Claude Code
+pill tooltip: Show AI authorship (refs/notes/ai)
+raw style: monospaced
+raw: 5 lines, 278 scalars, CR 4
+summary:
+  overview: Claude Code wrote all 5 attributed lines across 1 file.
+  shares: agent0 100.0%
+  agents: Claude Code
+  contributors:
+    [agent0] Claude Code — 5 lines
+      claude-sonnet-4-5
+      tooltip: Session s_12121212121212 | Tool session w1
+  files:
+    src/windows.cs — 5 lines
+      [agent0] Claude Code · 1–5 · 5 lines
+  footer: Recorded by git-ai · authorship/3.0.0
+  footer tooltip: Base commit 2222222222222222222222222222222222222222

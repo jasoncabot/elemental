@@ -1,0 +1,5 @@
+src/windows.cs
+  s_12121212121212::t_34343434343434 1-5
+---
+{"schema_version":"authorship/3.0.0","base_commit_sha":"2222222222222222222222222222222222222222","prompts":{},
+ "sessions":{"s_12121212121212":{"agent_id":{"tool":"claude","id":"w1","model":"claude-sonnet-4-5"}}}}

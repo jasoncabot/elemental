@@ -1,0 +1,5 @@
+chips:
+  [type:wip filled] wip
+  [neutral] ui
+  [neutral] Resolves: #5
+  [neutral] Closes: #6

@@ -1,0 +1,10 @@
+chips:
+  [type:feat filled] feat
+  [neutral] api
+  [danger] breaking
+  [neutral] Fixes: #812
+  [neutral] Reviewed-by: Alice Example
+  [neutral] Co-authored-by: Claude
+  [note filled] Note → opens note 0 (tooltip: Show note (refs/notes/commits))
+  [note filled] Note · review → opens note 1 (tooltip: Show note (refs/notes/review))
+  [ai] ✦ Ana · Claude Code

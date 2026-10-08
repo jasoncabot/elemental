@@ -79,6 +79,14 @@ set -o pipefail && xcodebuild [flags] | xcbeautify
 
 Never run bare `xcodebuild` without piping through `xcbeautify`.
 
+## Golden fixtures
+
+What the commit header and note viewer show is pinned by golden snapshots of their presentation
+models (see [docs/golden-fixtures.md](docs/golden-fixtures.md)). A failing golden means the UI would
+change: if that is intended, re-record with `ELEMENTAL_RECORD_GOLDENS=1` and commit the golden diff
+alongside the code. Never hand-edit a golden to make a test pass. New note or commit-message shapes
+go in `Packages/TestSupport/Sources/TestSupport/Fixtures/`.
+
 ## Testing the Git Backend
 
 The `GitData` package tests exercise the real git binary against disposable fixture repositories.

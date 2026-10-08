@@ -1,0 +1,21 @@
+lib/legacy.py
+  a1b2c3d4e5f60718 1-20
+  a1b2c3d4e5f60718 30-31
+tests/test_legacy.py
+  ffeeddccbbaa0099 5-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "base_commit_sha": "1111111111111111111111111111111111111111",
+  "prompts": {
+    "a1b2c3d4e5f60718": {
+      "agent_id": {"tool": "claude", "id": "legacy-1", "model": "claude-3-7-sonnet-20250219"},
+      "human_author": "Sam <sam@example.com>",
+      "total_additions": 22, "total_deletions": 0, "accepted_lines": 22, "overriden_lines": 0
+    },
+    "ffeeddccbbaa0099": {
+      "agent_id": {"tool": "codex", "id": "legacy-2", "model": "o3"},
+      "total_additions": 8, "total_deletions": 2, "accepted_lines": 8, "overriden_lines": 1
+    }
+  }
+}

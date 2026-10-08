@@ -1,0 +1,2 @@
+{"timestamp": "1700000000", "reviewRef": "refs/heads/feature", "targetRef": "refs/heads/main", "requester": "ana@example.com", "reviewers": ["bo@example.com"], "description": "Rewrite cache invalidation", "v": 0}
+{"timestamp": "1700000500", "reviewRef": "refs/heads/feature", "targetRef": "refs/heads/main", "requester": "ana@example.com", "reviewers": ["bo@example.com", "cy@example.com"], "description": "Rewrite cache invalidation (v2)", "v": 0}

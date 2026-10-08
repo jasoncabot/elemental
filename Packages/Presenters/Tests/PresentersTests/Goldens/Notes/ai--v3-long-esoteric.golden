@@ -1,0 +1,77 @@
+title: AI Authorship
+caption: refs/notes/ai · 0123456
+pill: ✦ Claude Code · Cursor
+pill tooltip: Show AI authorship (refs/notes/ai)
+raw style: monospaced
+raw: 117 lines, 3296 scalars, CR 0
+summary:
+  overview: AI agents wrote 3046 of 3078 attributed lines across 14 files.
+  shares: agent0 95.9% · agent1 2.5% · human0 0.7% · agent3 0.4% · unknown 0.4% · agent2 0.1%
+  agents: Claude Code, Cursor, Aider, GitHub Copilot
+  contributors:
+    [agent0] Claude Code — 2952 lines
+      claude-opus-4-1 · directed by Zoë O'Connor-Δ
+      approver: lead@example.com · env: ci · ticket: ELEM-1024
+      tooltip: Session s_aaaaaaaaaaaaaa | Tool session 8c3f6a8e-0d1b-4c5e-9b7a-2f4e6d8c0a1b
+    [agent1] Cursor — 78 lines
+      gpt-5-codex
+      tooltip: Session s_cccccccccccccc | Tool session cur_44
+    [human0] Zoë O'Connor-Δ — 21 lines
+      zoe@example.com
+      tooltip: Human h_bbbbbbbbbbbbbb
+    [agent3] Aider — 12 lines
+      tooltip: Session s_dddddddddddddd | Tool session aider-run-1
+    [unknown] Unknown — 11 lines
+      Not described in the note's metadata
+      tooltip: Session s_ffffffffffffff
+    [agent2] GitHub Copilot — 4 lines
+      gpt-4o · directed by Priya Raman
+      +31 −4 · 27 accepted · 3 edited by a human
+      tooltip: Session 0123456789abcdef | Tool session copilot-legacy-77 | Transcript https://transcripts.example.invalid/c/77
+    [human1] Reviewer With No Lines — 0 lines
+      rev@example.com
+      tooltip: Human h_99999999999999
+    [agent4] Codex — 0 lines
+      o4-mini · directed by dev@example.com
+      tooltip: Session s_eeeeeeeeeeeeee | Tool session codex-unused
+  files:
+    Packages/GitData/Sources/GitData/GitAINoteParser.swift — 180 lines
+      [agent0] Claude Code · 1–40, 45–60, 120–180 · 117 lines
+      [human0] Zoë O'Connor-Δ · 41–44 · 4 lines
+      [agent1] Cursor · 61–119 · 59 lines
+    docs/design notes/AI "authorship" viewer.md — 15 lines
+      [agent1] Cursor · 1–3, 5, 7–9, 11, 13–15, 17, 19–21 · 15 lines
+    tabs	and\backslashes.txt — 1 line
+      [human0] Zoë O'Connor-Δ · 1 · 1 line
+    App/Résumé/Ünïcødé 名前.swift — 7 lines
+      [agent0] Claude Code · 2–4 · 3 lines
+      [agent2] GitHub Copilot · 6–9 · 4 lines
+    assets/🚀 launch.json — 12 lines
+      [agent3] Aider · 1–12 · 12 lines
+    vendor/generated/huge_table.c — 2511 lines
+      [agent0] Claude Code · 10000–12499 · 2500 lines
+      [unknown] Unknown · 12500–12510 · 11 lines
+    Sources/Feature01/Module01View.swift — 10 lines
+      [agent0] Claude Code · 1–10 · 10 lines
+    Sources/Feature02/Module02View.swift — 23 lines
+      [agent0] Claude Code · 2–20 · 19 lines
+      [human0] Zoë O'Connor-Δ · 21–24 · 4 lines
+    Sources/Feature03/Module03View.swift — 30 lines
+      [agent0] Claude Code · 3–30 · 28 lines
+      [agent1] Cursor · 35, 37 · 2 lines
+    Sources/Feature04/Module04View.swift — 41 lines
+      [agent0] Claude Code · 4–40 · 37 lines
+      [human0] Zoë O'Connor-Δ · 41–44 · 4 lines
+    Sources/Feature05/Module05View.swift — 46 lines
+      [agent0] Claude Code · 5–50 · 46 lines
+    Sources/Feature06/Module06View.swift — 61 lines
+      [agent0] Claude Code · 6–60 · 55 lines
+      [human0] Zoë O'Connor-Δ · 61–64 · 4 lines
+      [agent1] Cursor · 65, 67 · 2 lines
+    Sources/Feature07/Module07View.swift — 64 lines
+      [agent0] Claude Code · 7–70 · 64 lines
+    Sources/Feature08/Module08View.swift — 77 lines
+      [agent0] Claude Code · 8–80 · 73 lines
+      [human0] Zoë O'Connor-Δ · 81–84 · 4 lines
+  footer: Recorded by git-ai 1.7.0-nightly+exp.sha.5114f85 · authorship/3.0.0
+  footer tooltip: Base commit 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c

@@ -1,0 +1,8 @@
+chips:
+  [type:feat filled] feat
+  [neutral] api
+  [danger] breaking
+  [neutral] Fixes: #812
+  [neutral] Reviewed-by: Alice Example
+  [neutral] Co-authored-by: Claude
+  [ai] ✦ Ana · Claude Code

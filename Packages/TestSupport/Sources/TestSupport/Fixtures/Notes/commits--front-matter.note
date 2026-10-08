@@ -1,0 +1,5 @@
+---
+title: Post-incident annotation
+severity: sev2
+---
+This commit was the trigger for the 2026-03-02 incident. See the write-up before cherry-picking.

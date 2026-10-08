@@ -1,0 +1,26 @@
+title: AI Authorship
+caption: refs/notes/ai · 0123456
+pill: ✦ Claude Code · Codex
+pill tooltip: Show AI authorship (refs/notes/ai)
+raw style: monospaced
+raw: 21 lines, 702 scalars, CR 0
+summary:
+  overview: AI agents wrote all 30 attributed lines across 2 files.
+  shares: agent0 73.3% · agent1 26.7%
+  agents: Claude Code, Codex
+  contributors:
+    [agent0] Claude Code — 22 lines
+      claude-3-7-sonnet · directed by Sam
+      +22 −0 · 22 accepted
+      tooltip: Session a1b2c3d4e5f60718 | Tool session legacy-1
+    [agent1] Codex — 8 lines
+      o3
+      +8 −2 · 8 accepted · 1 edited by a human
+      tooltip: Session ffeeddccbbaa0099 | Tool session legacy-2
+  files:
+    lib/legacy.py — 22 lines
+      [agent0] Claude Code · 1–20, 30–31 · 22 lines
+    tests/test_legacy.py — 8 lines
+      [agent1] Codex · 5–12 · 8 lines
+  footer: Recorded by git-ai · authorship/3.0.0
+  footer tooltip: Base commit 1111111111111111111111111111111111111111
