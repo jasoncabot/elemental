@@ -1,6 +1,6 @@
 title: AI Authorship
 caption: refs/notes/ai · 0123456
-pill: ✦ git-ai
+pill: git-ai
 pill tooltip: Show AI authorship (refs/notes/ai)
 raw style: monospaced
 raw: 8 lines, 330 scalars, CR 0
@@ -10,10 +10,10 @@ summary:
   agents: none
   contributors:
     [human0] Developer — 12 lines
-      Developer <dev@example.com>
+      dev@example.com
       tooltip: Human h_31dce776f88375
     [human1] Release Bot — 1 line
-      Release Bot <bot@example.com>
+      bot@example.com
       tooltip: Human h_42424242424242
   files:
     README.md — 12 lines

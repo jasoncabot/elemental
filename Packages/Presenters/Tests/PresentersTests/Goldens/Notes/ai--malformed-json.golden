@@ -2,6 +2,6 @@ title: Note
 caption: refs/notes/ai · 0123456
 pill: Note · ai
 pill tooltip: Show note (refs/notes/ai)
-raw style: prose
+raw style: monospaced
 raw: 7 lines, 136 scalars, CR 0
 summary: none

@@ -6,30 +6,30 @@ raw style: monospaced
 raw: 117 lines, 3296 scalars, CR 0
 summary:
   overview: AI agents wrote 3046 of 3078 attributed lines across 14 files.
-  shares: agent0 95.9% · human0 0.7% · agent1 2.5% · agent2 0.1% · agent3 0.4% · unknown 0.4%
-  agents: Claude Code, Cursor, Aider, GitHub Copilot, Codex
+  shares: agent0 95.9% · agent1 2.5% · human0 0.7% · agent3 0.4% · unknown 0.4% · agent2 0.1%
+  agents: Claude Code, Cursor, Aider, GitHub Copilot
   contributors:
     [agent0] Claude Code — 2952 lines
       claude-opus-4-1 · directed by Zoë O'Connor-Δ
       approver: lead@example.com · env: ci · ticket: ELEM-1024
       tooltip: Session s_aaaaaaaaaaaaaa | Tool session 8c3f6a8e-0d1b-4c5e-9b7a-2f4e6d8c0a1b
-    [human0] Zoë O'Connor-Δ — 21 lines
-      Zoë O'Connor-Δ <zoe@example.com>
-      tooltip: Human h_bbbbbbbbbbbbbb
     [agent1] Cursor — 78 lines
       gpt-5-codex
       tooltip: Session s_cccccccccccccc | Tool session cur_44
-    [agent2] GitHub Copilot — 4 lines
-      gpt-4o-2024-08-06 · directed by Priya Raman
-      +31 −4 · 27 accepted · 3 edited by a human
-      tooltip: Session 0123456789abcdef | Tool session copilot-legacy-77 | Transcript https://transcripts.example.invalid/c/77
+    [human0] Zoë O'Connor-Δ — 21 lines
+      zoe@example.com
+      tooltip: Human h_bbbbbbbbbbbbbb
     [agent3] Aider — 12 lines
       tooltip: Session s_dddddddddddddd | Tool session aider-run-1
     [unknown] Unknown — 11 lines
       Not described in the note's metadata
       tooltip: Session s_ffffffffffffff
+    [agent2] GitHub Copilot — 4 lines
+      gpt-4o · directed by Priya Raman
+      +31 −4 · 27 accepted · 3 edited by a human
+      tooltip: Session 0123456789abcdef | Tool session copilot-legacy-77 | Transcript https://transcripts.example.invalid/c/77
     [human1] Reviewer With No Lines — 0 lines
-      Reviewer With No Lines <rev@example.com>
+      rev@example.com
       tooltip: Human h_99999999999999
     [agent4] Codex — 0 lines
       o4-mini · directed by dev@example.com

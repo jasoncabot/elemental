@@ -6,19 +6,19 @@ raw style: monospaced
 raw: 39 lines, 959 scalars, CR 0
 summary:
   overview: AI agents wrote 73 of 82 attributed lines across 2 files.
-  shares: agent0 28.0% · human0 11.0% · agent1 61.0%
+  shares: agent1 61.0% · agent0 28.0% · human0 11.0%
   agents: Claude Code, Cursor
   contributors:
-    [agent0] Cursor — 23 lines
-      claude-sonnet-4-5 · directed by dev@example.com
-      tooltip: Session s_c9883b05a2487d | Tool session 6ef2299e-a67f-432b-aa80-3d2fb4d28999
-    [human0] Developer — 9 lines
-      Developer <dev@example.com>
-      tooltip: Human h_31dce776f88375
     [agent1] Claude Code — 50 lines
       claude-sonnet-4-5 · directed by dev@example.com
       team: backend
       tooltip: Session s_e7f2a90b31cc48 | Tool session conv_abc123def456
+    [agent0] Cursor — 23 lines
+      claude-sonnet-4-5 · directed by dev@example.com
+      tooltip: Session s_c9883b05a2487d | Tool session 6ef2299e-a67f-432b-aa80-3d2fb4d28999
+    [human0] Developer — 9 lines
+      dev@example.com
+      tooltip: Human h_31dce776f88375
   files:
     src/main.rs — 32 lines
       [agent0] Cursor · 1–10, 15–20, 25, 30–35 · 23 lines
