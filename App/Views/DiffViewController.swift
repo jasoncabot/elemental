@@ -25,10 +25,6 @@ final class DiffViewController: NSViewController, PresenterObserving {
         }
     }
 
-    /// Per-side gutter width and the centre divider width used by the side-by-side cell.
-    fileprivate static let sideGutter: CGFloat = 40
-    fileprivate static let sideDivider: CGFloat = 1
-
     private let header = DiffHeaderView()
     private let outerScroll = NSScrollView()
     // NSScrollView positions non-flipped document views at the bottom of the clip view
@@ -360,11 +356,9 @@ final class DiffViewController: NSViewController, PresenterObserving {
                 ? Self.pair(visible).map { .pair(left: $0, right: $1) }
                 : visible.map { .line($0) }
 
-            let contentMinWidth = computeContentMinWidth(rows)
             let section = reuseOrMake(index: i,
                                       text: hunk.context ?? hunk.header,
                                       rows: rows,
-                                      contentMinWidth: contentMinWidth,
                                       gutterWidth: gw)
             section.isCollapsed = collapsedHunks.contains(i)
             newSections.append(section)
@@ -465,7 +459,7 @@ final class DiffViewController: NSViewController, PresenterObserving {
     }
 
     private func reuseOrMake(index: Int, text: String, rows: [HunkRow],
-                             contentMinWidth: CGFloat, gutterWidth: CGFloat) -> HunkSectionView {
+                             gutterWidth: CGFloat) -> HunkSectionView {
         let section: HunkSectionView
         if let existing = hunkSections.first(where: { $0.hunkIndex == index }) {
             section = existing
@@ -476,7 +470,6 @@ final class DiffViewController: NSViewController, PresenterObserving {
         // Mode must precede rows so the right content view(s) exist before we push data in.
         section.configureSideBySide(sideBySide)
         section.gutterWidth = gutterWidth
-        section.contentMinWidth = contentMinWidth
         section.headerText = text
         section.rows = rows
         return section
@@ -526,7 +519,9 @@ final class DiffViewController: NSViewController, PresenterObserving {
     // MARK: - Column width
 
     private func updateAllContentColumnWidths() {
-        let available = max(outerScroll.bounds.width, 100)
+        // contentSize excludes a legacy vertical scroller; bounds.width would overstate the viewport
+        // and make every hunk's document a few points wider than the inner scroll view.
+        let available = max(outerScroll.contentSize.width, 100)
         for section in hunkSections {
             section.updateContentColumnWidth(available: available)
         }
@@ -552,19 +547,6 @@ final class DiffViewController: NSViewController, PresenterObserving {
         let digits = max(1, String(maxNum).count)
         let charWidth = Theme.Font.codeGutter.maximumAdvancement.width
         return ceil(CGFloat(digits) * charWidth) + 10
-    }
-
-    private func computeContentMinWidth(_ rows: [HunkRow]) -> CGFloat {
-        let charWidth = Theme.Font.code().maximumAdvancement.width
-        func w(_ text: String) -> CGFloat { CGFloat(text.count + 2) * charWidth + 24 }
-        return rows.reduce(CGFloat(0)) { best, row in
-            switch row {
-            case .line(let l): return max(best, w(l.text))
-            case .pair(let l, let r):
-                let per = max(l.map { w($0.text) } ?? 0, r.map { w($0.text) } ?? 0)
-                return max(best, per * 2 + Self.sideGutter * 2 + Self.sideDivider)
-            }
-        }
     }
 
     private static func pair(_ lines: [DiffLine]) -> [(DiffLine?, DiffLine?)] {
@@ -601,7 +583,6 @@ final class DiffViewController: NSViewController, PresenterObserving {
 @objc(HunkSectionView)
 private final class HunkSectionView: NSView {
     let hunkIndex: Int
-    var contentMinWidth: CGFloat = 0
     var onToggle: (() -> Void)?
 
     var headerText: String = "" {
@@ -907,8 +888,7 @@ private final class HunkSectionView: NSView {
             if hasHorizontalOverflow { hasHorizontalOverflow = false; updateInnerHeight() }
         } else {
             let intrinsic = unifiedView?.intrinsicContentSize.width ?? 0
-            let naturalWidth = max(intrinsic, contentMinWidth)
-            let target = max(naturalWidth, available, 100)
+            let target = max(intrinsic, available, 100)
             documentWidthConstraint.constant = target
             let overflow = target > available + 0.5
             if overflow != hasHorizontalOverflow {
