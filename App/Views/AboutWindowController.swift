@@ -1,8 +1,7 @@
 import AppKit
 
-/// The About window. Instead of the stock panel it tells the app's story in the app's own idiom:
-/// the architecture drawn as a short run of periodic-table tiles (the name had to pay off somewhere),
-/// followed by the handful of things Elemental refuses to do.
+/// The About window: the four architecture layers as periodic-table tiles, then a short list of
+/// things the app deliberately doesn't do.
 final class AboutWindowController: NSWindowController {
     private static let width: CGFloat = 460
     private static let repoURL = URL(string: "https://github.com/jasoncabot/elemental")!
@@ -37,7 +36,6 @@ final class AboutWindowController: NSWindowController {
     private static let air = NSColor(srgbRed: 0.58, green: 0.69, blue: 0.78, alpha: 1)
 
     /// Mirrors the layer table in the architecture docs; each layer only knows the one before it.
-    /// Each takes one element of the icon: data is the ground, views are what you see burning bright.
     private static let layers: [Layer] = [
         Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: Self.earth),
         Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: Self.water),
@@ -46,10 +44,10 @@ final class AboutWindowController: NSWindowController {
     ]
 
     private static let promises: [(symbol: String, title: String, detail: String)] = [
-        ("lock.fill", "Read-only", "It observes your repository and never writes to it."),
-        ("wifi.slash", "Fully offline", "Your code never leaves this machine. Updates are opt-in."),
-        ("bolt.fill", "Instant", "No model in the loop, so opening a diff costs nothing."),
-        ("person.crop.circle.badge.xmark", "No account", "Nothing to sign in to, and no server to talk to."),
+        ("lock.fill", "Read-only", "It never changes your repository."),
+        ("wifi.slash", "Fully offline", "Nothing leaves your Mac. Update checks are opt-in."),
+        ("bolt.fill", "No AI needed", "Diffs open straight away, with no model involved."),
+        ("person.crop.circle.badge.xmark", "No account", "No sign-in and no server."),
     ]
 
     private func makeContent() -> NSView {
@@ -60,7 +58,7 @@ final class AboutWindowController: NSWindowController {
         let name = NSTextField(labelWithString: "Elemental")
         name.font = .systemFont(ofSize: 26, weight: .bold)
 
-        let tagline = NSTextField(labelWithString: "A calm place to read code you didn't write.")
+        let tagline = NSTextField(labelWithString: "A git client for reading changes.")
         tagline.font = .systemFont(ofSize: 13)
         tagline.textColor = .secondaryLabelColor
 
@@ -76,7 +74,7 @@ final class AboutWindowController: NSWindowController {
         tiles.distribution = .fillEqually
         tiles.spacing = 8
 
-        let layersCaption = caption("Four layers, like the four elements in the icon. Each only knows the one before it.")
+        let layersCaption = caption("Each layer only talks to the one before it.")
 
         let promiseRows = NSStackView(views: Self.promises.map(makePromiseRow))
         promiseRows.orientation = .vertical
@@ -90,7 +88,7 @@ final class AboutWindowController: NSWindowController {
         let stack = NSStackView(views: [
             icon, name, tagline, version,
             sectionHeader("How it's built"), tiles, layersCaption,
-            sectionHeader("What it won't do"), promiseRows,
+            sectionHeader("What it doesn't do"), promiseRows,
             github,
         ])
         stack.orientation = .vertical
@@ -181,8 +179,7 @@ final class AboutWindowController: NSWindowController {
     }
 }
 
-/// One tile of the "periodic table": atomic number, a two-letter symbol, a name and a one-line gloss,
-/// washed in the layer's tint.
+/// One periodic-table-style tile: number, symbol, name and a short gloss, in the layer's tint.
 @objc(ElementTileView)
 private final class ElementTileView: NSView {
     private let tint: NSColor
