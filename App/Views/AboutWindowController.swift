@@ -1,0 +1,247 @@
+import AppKit
+
+/// The About window. Instead of the stock panel it tells the app's story in the app's own idiom:
+/// the architecture drawn as a short run of periodic-table tiles (the name had to pay off somewhere),
+/// followed by the handful of things Elemental refuses to do.
+final class AboutWindowController: NSWindowController {
+    private static let width: CGFloat = 460
+    private static let repoURL = URL(string: "https://github.com/jasoncabot/elemental")!
+
+    init() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400),
+                              styleMask: [.titled, .closable, .fullSizeContentView],
+                              backing: .buffered, defer: true)
+        window.title = "About Elemental"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        window.contentView = makeContent()
+        window.center()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    // MARK: - Content
+
+    private struct Layer {
+        let number: Int, symbol: String, name: String, detail: String, tint: NSColor
+    }
+
+    /// Mirrors the layer table in the architecture docs; each layer only knows the one before it.
+    private static let layers: [Layer] = [
+        Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: .systemBlue),
+        Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: .systemPurple),
+        Layer(number: 3, symbol: "Vw", name: "Views", detail: "Draws it", tint: .systemOrange),
+        Layer(number: 4, symbol: "Co", name: "Coordinator", detail: "Wires it up", tint: .systemGreen),
+    ]
+
+    private static let promises: [(symbol: String, title: String, detail: String)] = [
+        ("lock.fill", "Read-only", "It observes your repository and never writes to it."),
+        ("wifi.slash", "Fully offline", "Your code never leaves this machine. Updates are opt-in."),
+        ("bolt.fill", "Instant", "No model in the loop, so opening a diff costs nothing."),
+        ("person.crop.circle.badge.xmark", "No account", "Nothing to sign in to, and no server to talk to."),
+    ]
+
+    private func makeContent() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.setAccessibilityLabel("Elemental")
+
+        let name = NSTextField(labelWithString: "Elemental")
+        name.font = .systemFont(ofSize: 26, weight: .bold)
+
+        let tagline = NSTextField(labelWithString: "A calm place to read code you didn't write.")
+        tagline.font = .systemFont(ofSize: 13)
+        tagline.textColor = .secondaryLabelColor
+
+        let version = NSTextField(labelWithString: Self.versionString())
+        version.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        version.textColor = .tertiaryLabelColor
+
+        let tiles = NSStackView(views: Self.layers.map {
+            ElementTileView(number: $0.number, symbol: $0.symbol, name: $0.name,
+                            detail: $0.detail, tint: $0.tint)
+        })
+        tiles.orientation = .horizontal
+        tiles.distribution = .fillEqually
+        tiles.spacing = 8
+
+        let layersCaption = caption("Four layers, one direction. Each only knows the one before it.")
+
+        let promiseRows = NSStackView(views: Self.promises.map(makePromiseRow))
+        promiseRows.orientation = .vertical
+        promiseRows.alignment = .leading
+        promiseRows.spacing = 10
+
+        let github = NSButton(title: "View on GitHub", target: self, action: #selector(openRepository(_:)))
+        github.bezelStyle = .rounded
+        github.controlSize = .small
+
+        let stack = NSStackView(views: [
+            icon, name, tagline, version,
+            sectionHeader("How it's built"), tiles, layersCaption,
+            sectionHeader("What it won't do"), promiseRows,
+            github,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 4
+        stack.setCustomSpacing(10, after: icon)
+        stack.setCustomSpacing(2, after: name)
+        stack.setCustomSpacing(24, after: version)
+        stack.setCustomSpacing(10, after: tiles)
+        stack.setCustomSpacing(24, after: layersCaption)
+        stack.setCustomSpacing(22, after: promiseRows)
+        stack.edgeInsets = NSEdgeInsets(top: 40, left: 24, bottom: 24, right: 24)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let background = NSVisualEffectView()
+        background.material = .underWindowBackground
+        background.blendingMode = .behindWindow
+        background.state = .followsWindowActiveState
+        background.addSubview(stack)
+
+        let inner = Self.width - 48
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: background.topAnchor).id("About.stack.top"),
+            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor).id("About.stack.leading"),
+            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor).id("About.stack.trailing"),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor).id("About.stack.bottom"),
+            background.widthAnchor.constraint(equalToConstant: Self.width).id("About.content.width"),
+            icon.widthAnchor.constraint(equalToConstant: 88).id("About.icon.width"),
+            icon.heightAnchor.constraint(equalToConstant: 88).id("About.icon.height"),
+            tiles.widthAnchor.constraint(equalToConstant: inner).id("About.tiles.width"),
+            layersCaption.widthAnchor.constraint(equalToConstant: inner).id("About.layersCaption.width"),
+            promiseRows.widthAnchor.constraint(equalToConstant: inner).id("About.promises.width"),
+        ])
+        return background
+    }
+
+    private func caption(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        label.preferredMaxLayoutWidth = Self.width - 48
+        return label
+    }
+
+    private func sectionHeader(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text.uppercased())
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .tertiaryLabelColor
+        return label
+    }
+
+    private func makePromiseRow(_ promise: (symbol: String, title: String, detail: String)) -> NSView {
+        let image = NSImage(systemSymbolName: promise.symbol, accessibilityDescription: nil)
+        let glyph = NSImageView(image: image ?? NSImage())
+        glyph.symbolConfiguration = .init(pointSize: 14, weight: .medium)
+        glyph.contentTintColor = .controlAccentColor
+        glyph.setContentHuggingPriority(.required, for: .horizontal)
+
+        let title = NSTextField(labelWithString: promise.title)
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        let detail = NSTextField(wrappingLabelWithString: promise.detail)
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        detail.preferredMaxLayoutWidth = Self.width - 48 - 36
+
+        let text = NSStackView(views: [title, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 1
+
+        let row = NSStackView(views: [glyph, text])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 12
+        glyph.widthAnchor.constraint(equalToConstant: 24).id("About.promise.glyph.width").isActive = true
+        return row
+    }
+
+    private static func versionString() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        return "Version \(version)"
+    }
+
+    @objc private func openRepository(_ sender: Any?) {
+        NSWorkspace.shared.open(Self.repoURL)
+    }
+}
+
+/// One tile of the "periodic table": atomic number, a two-letter symbol, a name and a one-line gloss,
+/// washed in the layer's tint.
+@objc(ElementTileView)
+private final class ElementTileView: NSView {
+    private let tint: NSColor
+
+    init(number: Int, symbol: String, name: String, detail: String, tint: NSColor) {
+        self.tint = tint
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+
+        let ink = NSColor(name: nil) { appearance in
+            let resolved = tint.resolvedColor(for: appearance)
+            let label = NSColor.labelColor.resolvedColor(for: appearance)
+            return resolved.blended(withFraction: 0.45, of: label) ?? resolved
+        }
+
+        let numberLabel = NSTextField(labelWithString: String(number))
+        numberLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        numberLabel.textColor = ink.withAlphaComponent(0.8)
+
+        let symbolLabel = NSTextField(labelWithString: symbol)
+        let base = NSFont.systemFont(ofSize: 32, weight: .semibold)
+        symbolLabel.font = base.fontDescriptor.withDesign(.rounded).flatMap { NSFont(descriptor: $0, size: 32) } ?? base
+        symbolLabel.textColor = ink
+
+        let nameLabel = NSTextField(labelWithString: name)
+        nameLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        nameLabel.lineBreakMode = .byTruncatingTail
+
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.font = .systemFont(ofSize: 10)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+
+        let column = NSStackView(views: [numberLabel, symbolLabel, nameLabel, detailLabel])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 0
+        column.setCustomSpacing(2, after: symbolLabel)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
+
+        NSLayoutConstraint.activate([
+            column.topAnchor.constraint(equalTo: topAnchor, constant: 8).id("ElementTile.column.top"),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10).id("ElementTile.column.bottom"),
+            column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10).id("ElementTile.column.leading"),
+            column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8).id("ElementTile.column.trailing"),
+        ])
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel("\(name): \(detail)")
+        toolTip = "\(name) — \(detail)"
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = tint.withAlphaComponent(0.13).cgColor
+            layer?.borderColor = tint.withAlphaComponent(0.35).cgColor
+        }
+    }
+}

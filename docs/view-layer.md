@@ -48,6 +48,13 @@ state and there's no presenter. `UpdateController` (App/Updates) owns the `SPUSt
 that **Elemental → Check for Updates…** targets. Automatic checks are off by default (see
 [releasing.md](releasing.md)).
 
+## About
+
+**Elemental → About Elemental** opens `AboutWindowController` (App/Views), a static window with no
+presenter: the app icon and version, the four layers drawn as periodic-table tiles (`ElementTileView`),
+and the "won't do" promises from AGENTS.md. Keep both in step with [architecture.md](architecture.md)
+and AGENTS.md if the layers or non-negotiables change.
+
 ## Commit-graph cell
 
 - A **custom `NSView`** used as the graph column's cell. Computes nothing itself — it draws a

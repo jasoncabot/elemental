@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Sparkle. Created before the menu so "Check for Updates…" has a target.
     private var updates: UpdateController?
     private var settingsWindow: SettingsWindowController?
+    private var aboutWindow: AboutWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         updates = MainActor.assumeIsolated { UpdateController() }
@@ -141,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Elemental",
-                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        action: #selector(showAbout(_:)),
                         keyEquivalent: "")
         if let updates {
             let check = NSMenuItem(title: "Check for Updates…",
@@ -242,6 +243,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func showAbout(_ sender: Any?) {
+        MainActor.assumeIsolated {
+            let controller = aboutWindow ?? AboutWindowController()
+            aboutWindow = controller
+            controller.showWindow(sender)
+            controller.window?.makeKeyAndOrderFront(sender)
+        }
+    }
 
     @objc private func showSettings(_ sender: Any?) {
         guard let updates else { return }
