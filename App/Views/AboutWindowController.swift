@@ -30,12 +30,19 @@ final class AboutWindowController: NSWindowController {
         let number: Int, symbol: String, name: String, detail: String, tint: NSColor
     }
 
+    // The four orbs of the app icon, sampled from it: earth, water, fire, air.
+    private static let earth = NSColor(srgbRed: 0.28, green: 0.60, blue: 0.40, alpha: 1)
+    private static let water = NSColor(srgbRed: 0.16, green: 0.43, blue: 0.75, alpha: 1)
+    private static let fire = NSColor(srgbRed: 0.95, green: 0.36, blue: 0.16, alpha: 1)
+    private static let air = NSColor(srgbRed: 0.58, green: 0.69, blue: 0.78, alpha: 1)
+
     /// Mirrors the layer table in the architecture docs; each layer only knows the one before it.
+    /// Each takes one element of the icon: data is the ground, views are what you see burning bright.
     private static let layers: [Layer] = [
-        Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: .systemBlue),
-        Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: .systemPurple),
-        Layer(number: 3, symbol: "Vw", name: "Views", detail: "Draws it", tint: .systemOrange),
-        Layer(number: 4, symbol: "Co", name: "Coordinator", detail: "Wires it up", tint: .systemGreen),
+        Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: Self.earth),
+        Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: Self.water),
+        Layer(number: 3, symbol: "Vw", name: "Views", detail: "Draws it", tint: Self.fire),
+        Layer(number: 4, symbol: "Co", name: "Coordinator", detail: "Wires it up", tint: Self.air),
     ]
 
     private static let promises: [(symbol: String, title: String, detail: String)] = [
@@ -69,7 +76,7 @@ final class AboutWindowController: NSWindowController {
         tiles.distribution = .fillEqually
         tiles.spacing = 8
 
-        let layersCaption = caption("Four layers, one direction. Each only knows the one before it.")
+        let layersCaption = caption("Four layers, like the four elements in the icon. Each only knows the one before it.")
 
         let promiseRows = NSStackView(views: Self.promises.map(makePromiseRow))
         promiseRows.orientation = .vertical
@@ -140,7 +147,7 @@ final class AboutWindowController: NSWindowController {
         let image = NSImage(systemSymbolName: promise.symbol, accessibilityDescription: nil)
         let glyph = NSImageView(image: image ?? NSImage())
         glyph.symbolConfiguration = .init(pointSize: 14, weight: .medium)
-        glyph.contentTintColor = .controlAccentColor
+        glyph.contentTintColor = .secondaryLabelColor
         glyph.setContentHuggingPriority(.required, for: .horizontal)
 
         let title = NSTextField(labelWithString: promise.title)
