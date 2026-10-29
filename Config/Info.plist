@@ -18,5 +18,7 @@
 
 	<!-- SUPublicEDKey is added by scripts/setup-sparkle-keys.sh; the release workflow refuses to
 	     ship without it. -->
+	<key>SUPublicEDKey</key>
+	<string>zic2qPkdjoewBrPQI+KnXYX4eJrB+pBKIyH3q6Huj7k=</string>
 </dict>
 </plist>
