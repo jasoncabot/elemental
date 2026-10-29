@@ -26,6 +26,25 @@ public final class CommitDetailPresenter: Presenter {
             self.text = text
             self.gitAI = GitAINoteParser.parse(text)
         }
+
+        /// Whether this ref is a local tracking copy of a remote's notes (git-ai keeps one at
+        /// `refs/notes/ai-remote/<remote>` beside its own `refs/notes/ai`).
+        var isRemoteMirror: Bool { ref.contains("-remote/") }
+
+        /// Drops a git-ai log that repeats one already listed, so a fetched repo shows one pill
+        /// per log instead of one per ref holding a copy. The local ref wins over its mirror and
+        /// keeps its position. Only git-ai logs collapse: the same words in two human note refs
+        /// are still two separate annotations.
+        static func collapsingMirrors(_ entries: [NoteEntry]) -> [NoteEntry] {
+            var result: [NoteEntry] = []
+            for entry in entries {
+                guard entry.gitAI != nil,
+                      let i = result.firstIndex(where: { $0.gitAI != nil && $0.text == entry.text })
+                else { result.append(entry); continue }
+                if result[i].isRemoteMirror && !entry.isRemoteMirror { result[i] = entry }
+            }
+            return result
+        }
     }
 
     private let backend: GitBackend
@@ -113,7 +132,7 @@ public final class CommitDetailPresenter: Presenter {
                 }
             }
             guard let self, self.sha == sha else { return }
-            self.commitNotes = entries
+            self.commitNotes = NoteEntry.collapsingMirrors(entries)
             self.notify()
         }
     }

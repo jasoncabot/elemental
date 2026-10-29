@@ -51,6 +51,10 @@ The App renders them as given.
 - **`Swatch`**: colour roles (`commitType`, `neutral`, `danger`, `issue`, `ai`, `note`,
   `agent(n)`, `human(n)`, `unknown`). The App maps them to system colours in `Swatch+Color.swift`.
 - `CommitDetailPresenter.NoteEntry` carries `gitAI: GitAINote?`, parsed once when the note loads.
+  Notes are read from every `refs/notes/*` ref, and git-ai keeps a tracking copy of each remote's log
+  at `refs/notes/ai-remote/<remote>` beside its own `refs/notes/ai`. `NoteEntry.collapsingMirrors`
+  drops a git-ai log that repeats one already listed (the local ref wins), so a fetched repo shows one
+  pill per log. Identical text in two human note refs is never merged.
 
 ## Disk-change resilience (the headline logic lives here)
 
