@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged with the generated Info.plist (GENERATE_INFOPLIST_FILE). Sparkle updater settings;
+	     see docs/releasing.md. -->
+
+	<!-- Latest stable release's appcast, published as a release asset by .github/workflows/release.yml.
+	     GitHub's /releases/latest/ never points at a prerelease. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/jasoncabot/elemental/releases/latest/download/appcast.xml</string>
+
+	<!-- Manual only by default: no background checks and no "check automatically?" prompt, so the
+	     app contacts the network only when the user asks (Check for Updates…) or turns automatic
+	     checks on in Settings. -->
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+
+	<!-- SUPublicEDKey is added by scripts/setup-sparkle-keys.sh; the release workflow refuses to
+	     ship without it. -->
+</dict>
+</plist>

@@ -39,6 +39,15 @@ beside the diff. Human notes read as selectable prose. git-ai logs open on a **S
 button. The viewer only lays out `NotePresentation`. Strings and colour roles come from Presenters
 and are golden-tested.
 
+## Settings and updates
+
+**Settings… (⌘,)** opens `SettingsWindowController`, a plain AppKit window with one *Software Update*
+section. Its checkboxes are Cocoa-bound straight to Sparkle's `SPUUpdater` (`automaticallyChecksForUpdates`,
+`automaticallyDownloadsUpdates`, `canCheckForUpdates`), so Sparkle's persisted preferences are the only
+state and there's no presenter. `UpdateController` (App/Updates) owns the `SPUStandardUpdaterController`
+that **Elemental → Check for Updates…** targets. Automatic checks are off by default (see
+[releasing.md](releasing.md)).
+
 ## Commit-graph cell
 
 - A **custom `NSView`** used as the graph column's cell. Computes nothing itself — it draws a

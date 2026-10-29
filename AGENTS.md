@@ -14,6 +14,10 @@ that improves a feature while breaking one of these is a regression.
   experience must work fully offline — on a plane, on an air-gapped box, on a client's
   confidential codebase under NDA. Network access is not "degraded mode"; it is *no part of*
   the core path. Don't phone home, don't fetch, don't telemeter.
+  The single exception is the **opt-in updater** (Sparkle, see [docs/releasing.md](docs/releasing.md)).
+  It contacts GitHub only when the user chooses Check for Updates… or turns on automatic checks
+  in Settings. It is off by default and sends nothing about the user or their repositories. Keep it
+  that way: never enable automatic checks by default and never add another network call.
 - **No inference cost. No latency tax.** Opening a diff is instant. The core must be 100%
   functional and fast with **zero LLM inference** — driven only by git metadata, file paths,
   diff structure, syntax/heuristics. Performance is a feature.

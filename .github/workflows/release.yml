@@ -27,6 +27,34 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "TAG=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          # CFBundleVersion — what Sparkle compares to decide an update is newer. Numeric part only
+          # (v0.2.0-beta.1 → 0.2.0); prereleases never appear in the appcast anyway.
+          echo "BUILD=${VERSION%%-*}" >> "$GITHUB_OUTPUT"
+
+      - name: Check update signing is set up
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          # Shipping without these would leave installs unable to verify any future update.
+          /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" Config/Info.plist >/dev/null 2>&1 || {
+            echo "::error::Config/Info.plist has no SUPublicEDKey. Run scripts/setup-sparkle-keys.sh (docs/releasing.md)."
+            exit 1
+          }
+          [ -n "$SPARKLE_ED_PRIVATE_KEY" ] || {
+            echo "::error::The SPARKLE_ED_PRIVATE_KEY secret is not set. Run scripts/setup-sparkle-keys.sh (docs/releasing.md)."
+            exit 1
+          }
+
+      - name: Download Sparkle tools
+        run: |
+          # Same version as the package pinned in the Xcode project.
+          SPARKLE_VERSION=$(sed -n '/XCRemoteSwiftPackageReference "Sparkle" \*\/ = {/,/};/s/.*version = \(.*\);/\1/p' \
+            Elemental.xcodeproj/project.pbxproj | head -1)
+          [ -n "$SPARKLE_VERSION" ] || { echo "::error::Could not read the Sparkle version from the project"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP/sparkle" ./bin/sign_update
+          echo "SPARKLE_BIN=$RUNNER_TEMP/sparkle/bin" >> "$GITHUB_ENV"
 
       - name: Import signing certificate
         env:
@@ -71,7 +99,26 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
             ENABLE_HARDENED_RUNTIME=YES \
-            MARKETING_VERSION="${{ steps.version.outputs.VERSION }}"
+            MARKETING_VERSION="${{ steps.version.outputs.VERSION }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.BUILD }}"
+
+      - name: Sign Sparkle for Developer ID
+        run: |
+          APP="$RUNNER_TEMP/Elemental.xcarchive/Products/Applications/Elemental.app"
+          FW="$APP/Contents/Frameworks/Sparkle.framework"
+          [ -d "$FW" ] || { echo "::error::Sparkle.framework is not embedded in the app"; exit 1; }
+          SIGN=(codesign --force --timestamp --options runtime --sign "Developer ID Application")
+          # Inside-out, as Sparkle documents for Developer ID signing outside Xcode's export:
+          # notarization rejects any nested helper not signed with our identity + hardened runtime.
+          for xpc in "$FW"/Versions/B/XPCServices/*.xpc; do
+            if [ -e "$xpc" ]; then "${SIGN[@]}" --preserve-metadata=entitlements "$xpc"; fi
+          done
+          "${SIGN[@]}" "$FW/Versions/B/Autoupdate"
+          "${SIGN[@]}" "$FW/Versions/B/Updater.app"
+          "${SIGN[@]}" "$FW"
+          # Re-sealing the framework invalidates the app's seal, so sign the app last.
+          "${SIGN[@]}" --entitlements Config/Elemental.entitlements "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Create DMG
         run: |
@@ -158,12 +205,38 @@ jobs:
 
           echo "CHANGELOG_FILE=$CHANGELOG_FILE" >> "$GITHUB_ENV"
 
+      - name: Generate appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          TAG="${{ steps.version.outputs.TAG }}"
+          # Sign the final (notarized, stapled) DMG; the key goes in on stdin, never on the command line.
+          SIGNATURE=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+            | "$SPARKLE_BIN/sign_update" --ed-key-file - -p "$DMG_PATH")
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+            | "$SPARKLE_BIN/sign_update" --ed-key-file - --verify "$DMG_PATH" "$SIGNATURE"
+
+          APPCAST_PATH="$RUNNER_TEMP/appcast.xml"
+          python3 scripts/make-appcast.py \
+            --version "${{ steps.version.outputs.VERSION }}" \
+            --build "${{ steps.version.outputs.BUILD }}" \
+            --url "https://github.com/${{ github.repository }}/releases/download/${TAG}/${DMG_NAME}" \
+            --length "$(stat -f%z "$DMG_PATH")" \
+            --signature "$SIGNATURE" \
+            --notes "$CHANGELOG_FILE" \
+            --release-page "https://github.com/${{ github.repository }}/releases/tag/${TAG}" \
+            --out "$APPCAST_PATH"
+          echo "APPCAST_PATH=$APPCAST_PATH" >> "$GITHUB_ENV"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           name: "Elemental ${{ steps.version.outputs.VERSION }}"
           body_path: ${{ env.CHANGELOG_FILE }}
-          files: ${{ env.DMG_PATH }}
+          # appcast.xml is what Sparkle reads, via …/releases/latest/download/appcast.xml.
+          files: |
+            ${{ env.DMG_PATH }}
+            ${{ env.APPCAST_PATH }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.TAG, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.TAG, '-') }}

@@ -38,4 +38,23 @@ jobs:
             -scheme Elemental \
             -configuration Debug \
             -destination 'platform=macOS' \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO | xcbeautify
+
+      - name: Check updater is bundled
+        if: ${{ !cancelled() }}
+        run: |
+          APP=build/Build/Products/Debug/Elemental.app
+          # A package framework that isn't embedded still compiles, then crashes at launch.
+          test -d "$APP/Contents/Frameworks/Sparkle.framework" \
+            || { echo "::error::Sparkle.framework is not embedded in Elemental.app"; exit 1; }
+          PLIST="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$PLIST"
+          # Manual-only updates: the app must never check on its own unless the user opts in.
+          [ "$(/usr/libexec/PlistBuddy -c "Print :SUEnableAutomaticChecks" "$PLIST")" = "false" ] \
+            || { echo "::error::SUEnableAutomaticChecks must be false"; exit 1; }
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST"
+
+      - name: Test appcast generator
+        if: ${{ !cancelled() }}
+        run: python3 scripts/make-appcast.py --self-test

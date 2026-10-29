@@ -20,8 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// setup completes — otherwise opening a coordinator would silently no-op and the user
     /// would see an active app with no window.
     private var pendingURLs: [URL] = []
+    /// Sparkle. Created before the menu so "Check for Updates…" has a target.
+    private var updates: UpdateController?
+    private var settingsWindow: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updates = MainActor.assumeIsolated { UpdateController() }
         setUpMainMenu()
 
         guard let backend = try? CLIGitBackend() else {
@@ -139,6 +143,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "About Elemental",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
+        if let updates {
+            let check = NSMenuItem(title: "Check for Updates…",
+                                   action: UpdateController.checkForUpdatesAction,
+                                   keyEquivalent: "")
+            check.target = updates.controller
+            appMenu.addItem(check)
+        }
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(showSettings(_:)),
+                        keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Elemental",
                         action: #selector(NSApplication.terminate(_:)),
@@ -227,6 +242,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func showSettings(_ sender: Any?) {
+        guard let updates else { return }
+        MainActor.assumeIsolated {
+            let controller = settingsWindow ?? SettingsWindowController(updates: updates)
+            settingsWindow = controller
+            controller.showWindow(sender)
+            controller.window?.makeKeyAndOrderFront(sender)
+        }
+    }
 
     @objc private func newWindow(_ sender: Any?) {
         openNewWindow(restoreSession: false)

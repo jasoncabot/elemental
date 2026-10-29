@@ -10,6 +10,7 @@
 		100000000000000000000B4 /* GitData in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000B2 /* GitData */; };
 		100000000000000000000B5 /* Presenters in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000B3 /* Presenters */; };
 		100000000000000000000B8 /* AppRouting in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000B7 /* AppRouting */; };
+		100000000000000000000BB /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 100000000000000000000BA /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 				100000000000000000000B4 /* GitData in Frameworks */,
 				100000000000000000000B5 /* Presenters in Frameworks */,
 				100000000000000000000B8 /* AppRouting in Frameworks */,
+				100000000000000000000BB /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,6 +75,7 @@
 				100000000000000000000B2 /* GitData */,
 				100000000000000000000B3 /* Presenters */,
 				100000000000000000000B7 /* AppRouting */,
+				100000000000000000000BA /* Sparkle */,
 			);
 			productName = Elemental;
 			productReference = 100000000000000000000A5 /* Elemental.app */;
@@ -107,6 +110,7 @@
 				100000000000000000000B0 /* XCLocalSwiftPackageReference "Packages/GitData" */,
 				100000000000000000000B1 /* XCLocalSwiftPackageReference "Packages/Presenters" */,
 				100000000000000000000B6 /* XCLocalSwiftPackageReference "Packages/AppRouting" */,
+				100000000000000000000B9 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = 100000000000000000000A3 /* Products */;
 			projectDirPath = "";
@@ -188,10 +192,11 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(MARKETING_VERSION)";
 				DEVELOPMENT_TEAM = 2V62Z49VFD;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Elemental;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -216,10 +221,11 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(MARKETING_VERSION)";
 				DEVELOPMENT_TEAM = 2V62Z49VFD;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Elemental;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -274,6 +280,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		100000000000000000000B9 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.10.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		100000000000000000000B2 /* GitData */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -286,6 +303,11 @@
 		100000000000000000000B7 /* AppRouting */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AppRouting;
+		};
+		100000000000000000000BA /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 100000000000000000000B9 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

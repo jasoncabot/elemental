@@ -15,10 +15,13 @@ Package rules, AppKit layout philosophy, and extension checklists: [architecture
 
 Golden fixtures (UI stability tests, how to re-record): [golden-fixtures.md](docs/golden-fixtures.md)
 
+Releasing, in-app updates (Sparkle) and signing keys: [releasing.md](docs/releasing.md)
+
 Roadmap: [next.md](docs/next.md)
 
 ## Non-negotiables
 
-- Read-only. No writes, no network, no LLM calls in the core path.
+- Read-only. No writes, no network, no LLM calls in the core path. (The opt-in, off-by-default updater is
+  the one network exception; see releasing.md.)
 - AppKit-first. No SwiftUI for load-bearing UI.
 - All new parsers/readers go in `GitData`; all UI state lives in a presenter.
