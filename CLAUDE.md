@@ -25,3 +25,13 @@ Roadmap: [next.md](docs/next.md)
   the one network exception; see releasing.md.)
 - AppKit-first. No SwiftUI for load-bearing UI.
 - All new parsers/readers go in `GitData`; all UI state lives in a presenter.
+
+## Before pushing
+
+CI (`.github/workflows/ci.yml`) builds the app with `xcodebuild`; the last three pushes to `main` failed it
+before anyone noticed. Cloud sessions are Linux and cannot compile Swift or AppKit, so:
+
+- Never push to `main`. Push a branch and open a PR; merge only once the CI `Tests` check is green on the head commit.
+- After pushing, check the CI run (`actions_list`) or subscribe to the PR, and fix any red build before moving on.
+- Where `xcodebuild` is available, build first: `set -o pipefail && xcodebuild build -workspace Elemental.xcworkspace -scheme Elemental -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO | xcbeautify`.
+- Swift pitfall: in a `final class`, use the class name, not `Self`, inside `static let` initializers (newer Xcode rejects `Self` there).

@@ -126,3 +126,11 @@ process (Swift's concurrent test runner) and across multiple processes on the sa
 - Fixtures must be fully self-contained and cleaned up in `deinit` or `defer`.
 - Use `--allow-empty` only when explicitly testing empty commits; prefer real file changes.
 - Avoid network access in tests (no `git fetch`, no `git clone` from remote URLs).
+
+## Before pushing
+
+CI (`.github/workflows/ci.yml`) builds the app with `xcodebuild`, but pushes straight to `main` have landed
+with a red build. Do not push to `main`: use a branch and PR, and merge only when the CI `Tests` check is green.
+If you can't compile locally (e.g. a Linux sandbox), wait for CI and fix any failure before moving on. Where
+`xcodebuild` is available, build first (see Build Commands). In a `final class`, use the class name rather
+than `Self` inside `static let` initializers; newer Xcode rejects it.
