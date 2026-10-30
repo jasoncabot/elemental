@@ -37,10 +37,10 @@ final class AboutWindowController: NSWindowController {
 
     /// Mirrors the layer table in the architecture docs; each layer only knows the one before it.
     private static let layers: [Layer] = [
-        Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: Self.earth),
-        Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: Self.water),
-        Layer(number: 3, symbol: "Vw", name: "Views", detail: "Draws it", tint: Self.fire),
-        Layer(number: 4, symbol: "Co", name: "Coordinator", detail: "Wires it up", tint: Self.air),
+        Layer(number: 1, symbol: "Gd", name: "Data", detail: "Reads git", tint: AboutWindowController.earth),
+        Layer(number: 2, symbol: "Pr", name: "Presenters", detail: "Holds state", tint: AboutWindowController.water),
+        Layer(number: 3, symbol: "Vw", name: "Views", detail: "Draws it", tint: AboutWindowController.fire),
+        Layer(number: 4, symbol: "Co", name: "Coordinator", detail: "Wires it up", tint: AboutWindowController.air),
     ]
 
     private static let promises: [(symbol: String, title: String, detail: String)] = [
