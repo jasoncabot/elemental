@@ -79,3 +79,10 @@ release workflow reads the project's pin to download the matching `sign_update`.
 | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID` | `scripts/setup-release-secrets.sh` | Developer ID signing |
 | `APPLE_NOTARY_KEY`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | `scripts/setup-release-secrets.sh` | Notarization |
 | `SPARKLE_ED_PRIVATE_KEY` | `scripts/setup-sparkle-keys.sh` | Signing updates for Sparkle |
+
+## Build info in the About window
+
+The Version line shows the git revision after the version number: `Version 0.1.12 (v0.1.12, a1b2c3d)` for a
+release build, `Version 0.1.0 (a1b2c3d, dirty)` for a local build with uncommitted changes to tracked files.
+The "Stamp build info" build phase runs `scripts/stamp-build-info.sh`, which writes `ElementalBuildInfo` into the
+built Info.plist. Release builds need the tag in the checkout, which `release.yml` already fetches.

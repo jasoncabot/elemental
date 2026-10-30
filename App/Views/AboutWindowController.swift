@@ -171,7 +171,9 @@ final class AboutWindowController: NSWindowController {
     private static func versionString() -> String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
-        return "Version \(version)"
+        // Stamped at build time by scripts/stamp-build-info.sh: "v0.1.12, a1b2c3d" or "a1b2c3d, dirty".
+        guard let build = info?["ElementalBuildInfo"] as? String, !build.isEmpty else { return "Version \(version)" }
+        return "Version \(version) (\(build))"
     }
 
     @objc private func openRepository(_ sender: Any?) {
